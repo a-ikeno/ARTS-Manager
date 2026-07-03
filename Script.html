@@ -1,0 +1,569 @@
+<script>
+let STATE = { token: '', user: null, master: null, dashboard: null, results: [], settings: {} };
+const $ = id => document.getElementById(id);
+
+function server(fn, ...args) {
+  return new Promise((resolve, reject) => {
+    const runner = google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(err => reject(err));
+
+    switch (fn) {
+      case 'bootstrap': return runner.bootstrap(...args);
+      case 'getPublicData': return runner.getPublicData(...args);
+      case 'setupEmergencyLogin': return runner.setupEmergencyLogin(...args);
+      case 'login': return runner.login(...args);
+      case 'loginFull': return runner.loginFull(...args);
+      case 'getAppData': return runner.getAppData(...args);
+      case 'getUpdateCenterSummary': return runner.getUpdateCenterSummary(...args);
+      case 'logout': return runner.logout(...args);
+      case 'saveResult': return runner.saveResult(...args);
+      case 'getDashboard': return runner.getDashboard(...args);
+      case 'listResults': return runner.listResults(...args);
+      case 'updateResult': return runner.updateResult(...args);
+      case 'deleteResult': return runner.deleteResult(...args);
+      case 'generateReport': return runner.generateReport(...args);
+      case 'getAiAnalysis': return runner.getAiAnalysis(...args);
+      case 'runAppUpdate': return runner.runAppUpdate(...args);
+      case 'saveUpdateManifestUrl': return runner.saveUpdateManifestUrl(...args);
+      case 'checkCodeUpdateReadiness': return runner.checkCodeUpdateReadiness(...args);
+      case 'runCodeUpdateFromManifest': return runner.runCodeUpdateFromManifest(...args);
+      case 'createBackupLog': return runner.createBackupLog(...args);
+      case 'updateSetting': return runner.updateSetting(...args);
+      case 'lockMonth': return runner.lockMonth(...args);
+      case 'unlockMonth': return runner.unlockMonth(...args);
+      default: return reject(new Error('Unsupported function: ' + fn));
+    }
+  });
+}
+
+function toast(msg) {
+  const t = $('toast');
+  if (!t) return;
+  t.textContent = msg || '';
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2600);
+}
+
+function setLoading(active, text) {
+  let el = $('loginLoadingOverlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'loginLoadingOverlay';
+    el.style.position = 'fixed';
+    el.style.inset = '0';
+    el.style.display = 'none';
+    el.style.alignItems = 'center';
+    el.style.justifyContent = 'center';
+    el.style.background = 'rgba(244,246,251,0.92)';
+    el.style.backdropFilter = 'blur(8px)';
+    el.style.zIndex = '9999';
+    el.style.padding = '24px';
+    el.innerHTML = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px 20px;box-shadow:0 16px 40px rgba(0,0,0,.12);font-weight:800;font-size:16px;min-width:220px;text-align:center;">読み込み中...</div>';
+    document.body.appendChild(el);
+  }
+  if (text) el.firstElementChild.textContent = text;
+  el.style.display = active ? 'flex' : 'none';
+}
+
+window.addEventListener('load', loadLogin);
+
+async function loadLogin() {
+  try {
+    const b = await server('bootstrap');
+    const publicData = (b && b.publicData) ? b.publicData : await server('getPublicData');
+    const staff = (publicData && publicData.staff && publicData.staff.length)
+      ? publicData.staff
+      : [{ name: '管理者', role: 'ADMIN' }];
+
+    fillLogin(staff);
+    if ($('versionBadge')) $('versionBadge').textContent = (b && b.version) || (publicData && publicData.version) || '';
+    showLoginDebug('');
+  } catch (e) {
+    fillLogin([{ name: '管理者', role: 'ADMIN' }]);
+    showLoginDebug({ loginLoadError: e.message || String(e) });
+    toast(e.message || String(e));
+  }
+}
+
+function fillLogin(staff) {
+  staff = Array.isArray(staff) && staff.length ? staff : [{ name: '管理者', role: 'ADMIN' }];
+  $('loginStaff').innerHTML = staff.map(s => {
+    const name = s.name || s['スタッフ名'] || '管理者';
+    const role = s.role || s['権限'] || '';
+    return `<option value="${esc(name)}">${esc(name)} ${role === 'ADMIN' ? '（管理者）' : ''}</option>`;
+  }).join('');
+  if (!$('loginPin').value) $('loginPin').value = '0000';
+}
+
+async function login() {
+  console.time('login');
+  try {
+    const payload = {
+      staffName: $('loginStaff').value || '管理者',
+      pin: $('loginPin').value || '0000'
+    };
+
+    setLoading(true, 'ログイン中...');
+    const r = await server('loginFull', payload);
+    if (!r || !r.ok || !r.token || !r.app) {
+      showLoginDebug({ loginFullResult: r });
+      throw new Error('ログイン応答が不正です');
+    }
+
+    STATE.token = r.token;
+    STATE.user = r.user || (r.app && r.app.user) || null;
+
+    $('loginView').classList.add('hidden');
+    $('appView').classList.remove('hidden');
+    showLoginDebug('');
+
+    const month = (r.app && r.app.month) || new Date().toISOString().slice(0, 7);
+    $('date').value = (r.app && r.app.today) || new Date().toISOString().slice(0, 10);
+    $('versionBadge').textContent = (r.app && r.app.version) || '';
+    $('adminTab').style.display = (STATE.user && STATE.user.isAdmin) ? 'block' : 'none';
+
+    console.time('master');
+    const masterPromise = server('getPublicData').finally(() => console.timeEnd('master'));
+    console.time('dashboard');
+    const dashboardPromise = server('getDashboard', { month }, STATE.token).finally(() => console.timeEnd('dashboard'));
+    console.time('results');
+    const resultsPromise = server('listResults', { month }, STATE.token).finally(() => console.timeEnd('results'));
+
+    const [master, dashboard, results] = await Promise.all([masterPromise, dashboardPromise, resultsPromise]);
+    console.log('[login] returns', {
+      masterType: master && typeof master,
+      dashboardType: dashboard && typeof dashboard,
+      resultsType: Array.isArray(results) ? 'array' : typeof results,
+      dashboardIsNull: dashboard === null
+    });
+
+    STATE.master = master && typeof master === 'object' ? master : { version: '', staff: [], stores: [], carriers: [], items: [] };
+    STATE.dashboard = dashboard && typeof dashboard === 'object' ? dashboard : null;
+    STATE.results = Array.isArray(results) ? results : [];
+    STATE.settings = (r.app && r.app.settings) || {};
+    console.log('[login] STATE after assign', {
+      dashboard: STATE.dashboard,
+      resultsLength: STATE.results.length,
+      masterHasStaff: Array.isArray(STATE.master && STATE.master.staff) ? STATE.master.staff.length : null
+    });
+
+    fillSelects();
+    renderItems();
+    await refreshUI();
+    toast('ログインしました');
+  } catch (e) {
+    toast(e.message || String(e));
+    showLoginDebug({ loginError: e.message || String(e), stack: e.stack || '' });
+  } finally {
+    setLoading(false);
+    console.timeEnd('login');
+  }
+}
+
+async function logout() {
+  try { if (STATE.token) await server('logout', STATE.token); } catch (e) {}
+  STATE = { token: '', user: null, master: null, dashboard: null, results: [], settings: {} };
+  $('appView').classList.add('hidden');
+  $('loginView').classList.remove('hidden');
+}
+
+function applyApp(app) {
+  console.log('[applyApp] called', {
+    appType: app && typeof app,
+    appDashboardType: app && app.dashboard && typeof app.dashboard,
+    appDashboardIsNull: app && app.dashboard === null
+  });
+  if (!app || typeof app !== 'object') {
+    showLoginDebug({ error: 'app is invalid', app });
+    toast('アプリデータが不正です');
+    return;
+  }
+
+  const emptyMaster = { staff: [], stores: [], carriers: [], items: [] };
+  app.master = app.master || emptyMaster;
+  app.master.staff = Array.isArray(app.master.staff) ? app.master.staff : [];
+  app.master.stores = Array.isArray(app.master.stores) ? app.master.stores : [];
+  app.master.carriers = Array.isArray(app.master.carriers) ? app.master.carriers : [];
+  app.master.items = Array.isArray(app.master.items) ? app.master.items : [];
+
+  STATE.master = app.master;
+  console.log('[applyApp] before dashboard assign', { currentDashboard: STATE.dashboard, nextDashboard: app.dashboard });
+  STATE.dashboard = app.dashboard || null;
+  STATE.results = Array.isArray(app.results) ? app.results : [];
+  // restore persisted results for today's date if server returned none
+  try {
+    if ((!STATE.results || STATE.results.length === 0) && app.today) {
+      const saved = JSON.parse(localStorage.getItem('ARTS_RESULTS_' + app.today) || 'null');
+      if (Array.isArray(saved)) STATE.results = saved;
+    }
+  } catch (e) {}
+  STATE.settings = app.settings || {};
+  STATE.user = app.user || STATE.user;
+  console.log('[applyApp] after assign', { dashboard: STATE.dashboard, resultsLength: STATE.results.length });
+
+  $('date').value = app.today || new Date().toISOString().slice(0, 10);
+  $('versionBadge').textContent = app.version || '';
+  $('adminTab').style.display = (app.user && app.user.isAdmin) ? 'block' : 'none';
+
+  fillSelects();
+  renderItems();
+  renderDashboard(STATE.dashboard);
+  renderResults(STATE.results);
+  renderUpdate(app.update);
+  refreshUpdateCenter();
+
+  $('piTarget').value = STATE.settings['PI目標'] || 40;
+  $('lockMonth').value = app.month || new Date().toISOString().slice(0, 7);
+}
+
+function fillSelects() {
+  const m = STATE.master || { staff: [], stores: [], carriers: [], items: [] };
+  const remembered = getInputState();
+
+  fill('store', m.stores.map(x => x['店舗名']).filter(Boolean));
+  fill('staff', m.staff.map(x => x.name || x['スタッフ名']).filter(Boolean));
+
+  const itemCarriers = [...new Set((m.items || []).map(x => x['キャリア']).filter(Boolean))];
+  const masterCarriers = (m.carriers || []).map(x => x['キャリア名']).filter(Boolean);
+  fill('carrier', itemCarriers.length ? itemCarriers : masterCarriers);
+
+  restoreSelectValue('store', remembered.store);
+  restoreSelectValue('staff', remembered.staff);
+  restoreSelectValue('carrier', remembered.carrier);
+
+  const f = STATE.dashboard?.filing || {};
+  fill('filterMonth', f.months || [STATE.dashboard?.month].filter(Boolean), true, '月');
+  fill('filterStore', f.stores || [], true, '店舗');
+  fill('filterStaff', f.staff || [], true, 'スタッフ');
+  fill('filterCarrier', f.carriers || [], true, 'キャリア');
+  $('filterMonth').value = STATE.dashboard?.month || '';
+}
+
+function fill(id, arr, blank, label) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = (blank ? `<option value="">${label || 'すべて'}</option>` : '') +
+    (arr || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+}
+
+function renderItems() {
+  const c = $('carrier').value;
+  const items = (STATE.master?.items || [])
+    .filter(i => String(i['キャリア']) === String(c))
+    .sort((a, b) => Number(a['表示順'] || a['並び順'] || 0) - Number(b['表示順'] || b['並び順'] || 0));
+
+  if ($('inputCarrierTitle')) $('inputCarrierTitle').textContent = c || '入力項目';
+  if ($('inputMeta')) $('inputMeta').textContent = `${items.length}項目`;
+
+  $('itemsBox').innerHTML = items.map(i => {
+    const name = i['入力項目'];
+    const required = String(i['必須'] || '').toUpperCase() === 'TRUE';
+    return `<div class="item input-card ${required ? 'required' : ''}">
+      <div class="item-head"><label>${esc(name)}</label>${required ? '<small>必須</small>' : ''}</div>
+      <div class="step-input">
+        <button type="button" onclick="stepItem('${escAttr(name)}',-1)">−</button>
+        <input data-item="${escAttr(name)}" type="number" inputmode="numeric" autocomplete="off" enterkeyhint="done" pattern="[0-9]*" min="0" max="9999" step="1" value="0" oninput="sanitizeItemValue(this)">
+        <button type="button" onclick="stepItem('${escAttr(name)}',1)">＋</button>
+      </div>
+    </div>`;
+  }).join('') || '<p class="muted">項目がありません</p>';
+
+  updateInputTotal();
+}
+
+function formatYMD(v) {
+  if (v === null || v === undefined || v === '') return '';
+  try {
+    if (v instanceof Date) return v.toISOString().slice(0,10);
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toISOString().slice(0,10);
+    const p = s.replace(/\//g,'-').split(' ')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return p;
+  } catch (e) {}
+  return '';
+}
+
+
+function getInputState() {
+  try { return JSON.parse(localStorage.getItem('ARTS_INPUT_STATE') || '{}'); } catch(e) { return {}; }
+}
+function rememberInputState() {
+  const state = {
+    store: $('store') ? $('store').value : '',
+    staff: $('staff') ? $('staff').value : '',
+    carrier: $('carrier') ? $('carrier').value : ''
+  };
+  localStorage.setItem('ARTS_INPUT_STATE', JSON.stringify(state));
+}
+function restoreSelectValue(id, value) {
+  const el = $(id);
+  if (!el || !value) return;
+  const found = Array.from(el.options).some(o => String(o.value) === String(value));
+  if (found) el.value = value;
+}
+function stepItem(name, delta) {
+  const input = document.querySelector(`[data-item="${cssEscape(name)}"]`);
+  if (!input) return;
+  const current = Number(input.value || 0);
+  const next = Math.max(0, Math.min(9999, current + delta));
+  input.value = next;
+  updateInputTotal();
+}
+function sanitizeItemValue(input) {
+  if (!input) return;
+  const raw = String(input.value ?? '').replace(/[^0-9]/g, '');
+  if (raw === '') {
+    input.value = '';
+    updateInputTotal();
+    return;
+  }
+  const value = Math.max(0, Math.min(9999, Number(raw) || 0));
+  input.value = String(value);
+  updateInputTotal();
+}
+function setAllInputValues(value) {
+  const next = Math.max(0, Math.min(9999, Number(value || 0)));
+  document.querySelectorAll('[data-item]').forEach(i => i.value = next);
+  updateInputTotal();
+}
+function clearInputValues(showToast = true) {
+  setAllInputValues(0);
+  if (showToast) toast('数値をクリアしました');
+}
+function focusFirstInput() {
+  const first = document.querySelector('[data-item]');
+  if (first) first.focus();
+}
+function updateInputTotal() {
+  let total = 0;
+  let count = 0;
+  document.querySelectorAll('[data-item]').forEach(i => {
+    const v = Number(i.value || 0);
+    total += v;
+    if (v) count++;
+  });
+  if ($('inputTotal')) $('inputTotal').textContent = `合計 ${total} / 入力 ${count}`;
+}
+function setSaving(isSaving) {
+  const btn = $('saveBtn');
+  if (!btn) return;
+  btn.disabled = !!isSaving;
+  btn.textContent = isSaving ? '保存中...' : '保存';
+}
+async function refreshUI() {
+  console.time('refreshUI');
+  console.log('[refreshUI] once', { dashboard: STATE.dashboard, resultsLength: STATE.results.length, todayEntries: 1 });
+  renderDashboard(STATE.dashboard);
+  renderResults(STATE.results);
+  await loadTodayEntries();
+  console.timeEnd('refreshUI');
+}
+async function loadTodayEntries() {
+  const selectedDate = $('date') ? $('date').value : '';
+  if (!STATE.token || !selectedDate) {
+    renderTodayEntries([]);
+    return;
+  }
+  try {
+    const rows = await server('listResults', { date: selectedDate }, STATE.token);
+    renderTodayEntries(Array.isArray(rows) ? rows : []);
+  } catch (e) {
+    renderTodayEntries([]);
+  }
+}
+
+function renderTodayEntries(rows) {
+  const el = $('todayInputList');
+  if (!el) return;
+  if (!Array.isArray(rows)) {
+    loadTodayEntries();
+    return;
+  }
+  const selectedDate = $('date') ? $('date').value : '';
+  const targetDate = formatYMD(selectedDate);
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  console.log('[renderTodayEntries] selectedDate =', selectedDate);
+  console.log('[renderTodayEntries] STATE.results.length =', safeRows.length);
+  console.log('[renderTodayEntries] STATE.results first5 =', safeRows.slice(0, 5));
+
+  safeRows.forEach((r, i) => {
+    const rawDate = r ? (r.date || r['日時'] || r['日付'] || r) : '';
+    const normalizedDate = formatYMD(rawDate);
+    console.log('[renderTodayEntries] row date', { index: i, rawDate: rawDate, normalizedDate: normalizedDate });
+  });
+
+  const visibleRows = (safeRows || []).filter(r => {
+    const d = formatYMD(r.date || r['日時'] || r['日付'] || r);
+    return !targetDate || d === targetDate;
+  });
+  console.log('[renderTodayEntries] visible rows =', visibleRows.length);
+  el.innerHTML = visibleRows.slice(0, 20).map(rowHtml).join('') || '<p class="muted">まだ入力がありません</p>';
+}
+function cssEscape(v) {
+  if (window.CSS && CSS.escape) return CSS.escape(String(v));
+  return String(v).replace(/(["\\])/g, '\\$1');
+}
+function escAttr(v){ return esc(v).replace(/'/g,'&#39;'); }
+
+async function saveResult() {
+  try {
+    const results = {};
+    document.querySelectorAll('[data-item]').forEach(i => { results[i.dataset.item] = Number(i.value || 0); });
+    // allow all-zero saves (server also accepts zeros)
+
+    const payload = { date: $('date').value, store: $('store').value, staffName: $('staff').value, carrier: $('carrier').value, memo: $('memo').value, results };
+    rememberInputState();
+    setSaving(true);
+    const r = await server('saveResult', payload, STATE.token);
+    console.log('[saveResult] response', { ok: !!r, dashboardType: r && typeof r.dashboard, resultsType: Array.isArray(r && r.results) ? 'array' : typeof (r && r.results), dashboardIsNull: r && r.dashboard === null });
+    STATE.dashboard = r.dashboard;
+    if (Array.isArray(r.results)) {
+      STATE.results = r.results;
+    } else {
+      STATE.results = await server('listResults', currentFilter(), STATE.token);
+    }
+    console.log('[saveResult] after assign', { dashboard: STATE.dashboard, resultsLength: STATE.results.length });
+    try { localStorage.setItem('ARTS_RESULTS_' + (payload.date || ''), JSON.stringify(STATE.results)); } catch (e) {}
+    await refreshUI();
+    clearInputValues(false);
+    $('memo').value = '';
+    toast((r && r.message) || '保存しました');
+  } catch (e) { toast(e.message || String(e)); }
+  finally { setSaving(false); }
+}
+
+async function reloadDashboard() {
+  try {
+    const f = currentFilter();
+    const d = await server('getDashboard', f, STATE.token);
+    console.log('[reloadDashboard] response', { dashboardType: d && typeof d, dashboardIsNull: d === null });
+    STATE.dashboard = d;
+    STATE.results = await server('listResults', f, STATE.token);
+    console.log('[reloadDashboard] after assign', { dashboard: STATE.dashboard, resultsLength: STATE.results.length });
+    renderDashboard(d);
+    renderResults(STATE.results);
+  } catch (e) { toast(e.message || String(e)); }
+}
+
+function currentFilter() { return { month: $('filterMonth').value, store: $('filterStore').value, staff: $('filterStaff').value, carrier: $('filterCarrier').value }; }
+
+function renderDashboard(d) {
+  if (!d || !d.summary) return;
+  const s = d.summary;
+  const recentRows = Array.isArray(d.recent) ? d.recent : [];
+  $('homePi').textContent = s.pi || 0;
+  $('homeTarget').textContent = '目標 ' + (s.target || 0);
+  $('homeAch').textContent = Math.round((s.achievement || 0) * 100) + '%';
+  $('homeRemain').textContent = '残 ' + (s.remaining || 0);
+  $('homeIenaka').textContent = s.ienaka || 0;
+  $('homeLock').textContent = d.locked ? 'LOCKED' : 'OPEN';
+  $('homeScope').textContent = d.scope || '';
+  $('dPi').textContent = s.pi || 0;
+  $('dSpsp').textContent = s.spsp || 0;
+  $('dHikari').textContent = s.hikari || 0;
+  $('dHome5g').textContent = s.home5g || 0;
+  $('dCard').textContent = s.card || 0;
+  $('dDenki').textContent = s.denki || 0;
+  $('dValuePass').textContent = s.valuePass || 0;
+  $('dAch').textContent = Math.round((s.achievement || 0) * 100) + '%';
+  $('ranking').innerHTML = (d.ranking || []).map((r, i) => `<div class="row"><div><b>${i + 1}. ${esc(r.staff)}</b><br><small>総数 ${r.total}</small></div><b>PI ${r.pi}</b></div>`).join('') || '<p class="muted">なし</p>';
+  $('storeRank').innerHTML = (d.byStore || []).map((r, i) => `<div class="row"><span>${i + 1}. ${esc(r.store)}</span><b>${r.value}</b></div>`).join('') || '<p class="muted">なし</p>';
+  $('recentList').innerHTML = recentRows.slice(0, 8).map(rowHtml).join('') || '<p class="muted">まだ入力がありません</p>';
+}
+
+function renderResults(rows) {
+  $('resultList').innerHTML = (rows || []).map(r => `<div class="row"><div><b>${esc(formatYMD(r.date))} ${esc(r.store)}</b><br><small>${esc(r.staff)} / ${esc(r.carrier)} / ${esc(r.item)} / ${esc(r.memo || '')}</small></div><div><b>${r.value}</b><br><button onclick="editResult('${r.id}',${r.value})">修正</button><button class="danger" onclick="delResult('${r.id}')">削除</button></div></div>`).join('') || '<p class="muted">データなし</p>';
+}
+function rowHtml(r) { return `<div class="row"><div><b>${esc(formatYMD(r.date))} ${esc(r.store)}</b><br><small>${esc(r.staff)} / ${esc(r.carrier)} / ${esc(r.item)}</small></div><b>${r.value}</b></div>`; }
+
+async function editResult(id, val) { const v = prompt('件数を入力', val); if (v === null) return; const memo = prompt('備考（空欄可）', ''); try { const r = await server('updateResult', { id, value: Number(v), memo: memo || '' }, STATE.token); STATE.dashboard = r.dashboard; STATE.results = r.results || []; await refreshUI(); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function delResult(id) { if (!confirm('削除しますか？')) return; try { const r = await server('deleteResult', id, STATE.token); STATE.dashboard = r.dashboard; STATE.results = r.results || []; await refreshUI(); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function makeReport(type) { try { const r = await server('generateReport', type, currentFilter(), STATE.token); $('reportText').value = r.text; } catch (e) { toast(e.message || String(e)); } }
+async function makeAi() { try { const r = await server('getAiAnalysis', currentFilter(), STATE.token); $('reportText').value = r.meetingText; } catch (e) { toast(e.message || String(e)); } }
+function copyReport() { navigator.clipboard.writeText($('reportText').value || ''); toast('コピーしました'); }
+function renderUpdate(u) {
+  if (!u) { $('updateInfo').textContent = ''; return; }
+  const notes = (u.releaseNotes || []).map(x => '・' + esc(x)).join('<br>');
+  const ready = u.readiness || {};
+  $('updateInfo').innerHTML = `
+    <b>現在</b> ${esc(u.currentVersion)} / <b>同梱</b> ${esc(u.bundledVersion)} / ${u.needUpdate ? '更新可能' : '最新版'}<br>
+    <span>${esc(u.note || '')}</span><br>
+    <small>${esc(u.copyPasteReduction || '')}</small>
+    ${notes ? `<div class="release-notes">${notes}</div>` : ''}
+    <small>Script ID: ${esc(ready.scriptId || '未取得')}</small><br>
+    <small>${esc(ready.message || '')}</small>
+  `;
+  if ($('manifestUrl')) $('manifestUrl').value = u.manifestUrl || '';
+}
+async function refreshUpdateCenter() {
+  if (!STATE.token || !STATE.user || !STATE.user.isAdmin) return;
+  try {
+    const r = await server('getUpdateCenterSummary', STATE.token);
+    if (!r) return;
+    if (r.update) renderUpdate(r.update);
+    renderUpdateHistory(r.histories || []);
+    renderBackupHistory(r.backups || []);
+  } catch (e) {
+    showLoginDebug({ updateCenterError: e.message || String(e) });
+  }
+}
+
+function renderUpdateHistory(rows) {
+  const el = $('updateHistoryList');
+  if (!el) return;
+  el.innerHTML = (rows || []).map(r => `
+    <div class="row">
+      <div><b>${esc(r['更新後'] || r['バージョン'] || '')}</b><br><small>${esc(r['日時'] || '')} / ${esc(r['実行者'] || '')}</small></div>
+      <small>${esc(r['状態'] || '')}</small>
+    </div>
+  `).join('') || '<p class="muted">更新履歴なし</p>';
+}
+
+function renderBackupHistory(rows) {
+  const el = $('backupHistoryList');
+  if (!el) return;
+  el.innerHTML = (rows || []).map(r => `
+    <div class="row">
+      <div><b>${esc(r['種類'] || '')}</b><br><small>${esc(r['日時'] || '')} / ${esc(r['実行者'] || '')}</small></div>
+      <small>${esc(r['対象'] || '')}</small>
+    </div>
+  `).join('') || '<p class="muted">バックアップ履歴なし</p>';
+}
+
+async function runUpdate() {
+  try {
+    const r = await server('runAppUpdate', STATE.token);
+    if (!r) { toast('更新結果が空です'); return; }
+    toast(r.message || 'データ更新しました');
+    await refreshUpdateCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+async function saveManifestUrl() { try { const r = await server('saveUpdateManifestUrl', $('manifestUrl').value, STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.message) || 'URL保存しました'); await refreshUpdateCenter(); } catch (e) { toast(e.message || String(e)); } }
+async function checkCodeUpdate() { try { const r = await server('checkCodeUpdateReadiness', STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.readiness && r.readiness.message) || '確認しました'); } catch (e) { toast(e.message || String(e)); } }
+async function runCodeUpdate() { try { if (!confirm('コード更新を実行します。事前バックアップ後に続行しますか？')) return; const r = await server('runCodeUpdateFromManifest', STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.message) || 'コード更新しました'); await refreshUpdateCenter(); } catch (e) { toast(e.message || String(e)); showLoginDebug({ codeUpdateError: e.message || String(e) }); } }
+async function backup() {
+  try {
+    const r = await server('createBackupLog', STATE.token);
+    if (!r) { toast('バックアップ結果が空です'); return; }
+    toast(r.message || 'バックアップログ作成しました');
+    await refreshUpdateCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+async function saveTarget() { try { await server('updateSetting', 'PI目標', $('piTarget').value, STATE.token); toast('保存しました'); reloadDashboard(); } catch (e) { toast(e.message || String(e)); } }
+async function lockMonth() { try { const r = await server('lockMonth', $('lockMonth').value, STATE.token); renderDashboard(r.dashboard); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function unlockMonth() { try { const r = await server('unlockMonth', $('lockMonth').value, STATE.token); renderDashboard(r.dashboard); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function showPage(id) {
+  console.log('[showPage]', { id, hasDashboard: !!STATE.dashboard, dashboardIsNull: STATE.dashboard === null, resultsLength: STATE.results.length });
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  $(id).classList.add('active');
+  if (id === 'inputPage' && STATE.token) {
+    await loadTodayEntries();
+  }
+}
+function showLoginDebug(d) { const el = $('loginDebug'); if (!el) return; el.textContent = (d && typeof d === 'object') ? JSON.stringify(d, null, 2) : (d || ''); }
+function esc(v) { return String(v ?? '').replace(/[&<>"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s])); }
+</script>

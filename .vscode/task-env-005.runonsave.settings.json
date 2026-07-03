@@ -1,0 +1,11 @@
+{
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": "^(Code\\.js|Index\\.html|Script\\.html|Style\\.html|appsscript\\.json)$",
+        "isAsync": true,
+        "cmd": "C:\\WINDOWS\\system32\\cmd.exe /v:on /c \"clasp push && for /f %i in ('powershell -NoProfile -Command \\\"Get-Date -Format yyyyMMdd-HHmmss\\\"') do set VER=auto-%i && clasp version \\\"!VER!\\\" && clasp deploy -i AKfycbxIH5j42Fd9kbkj3eXuuUp8ZVQ_GVt3lGjgXLAPPSYqrk1Rq2bEt5H5Fgvb9fXIuripUA -d \\\"!VER!\\\"\""
+      }
+    ]
+  }
+}

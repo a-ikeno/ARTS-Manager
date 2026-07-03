@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <?!= include('Style'); ?>
+</head>
+<body>
+  <div id="toast"></div>
+  <section id="loginView" class="login-wrap">
+    <div class="brand-card">
+      <div class="logo">A</div>
+      <h1>ARTS Manager</h1>
+      <p>KPI管理アプリ v1.1.0 β-1</p>
+      <label>スタッフ</label>
+      <select id="loginStaff"></select>
+      <label>パスコード</label>
+      <input id="loginPin" type="password" inputmode="numeric" placeholder="初期: 0000">
+      <button class="primary" onclick="login()">ログイン</button>
+      <pre id="loginDebug" class="debug-box"></pre>
+      <p class="muted small">更新センター対応版 / 実績データ保持</p>
+    </div>
+  </section>
+
+  <main id="appView" class="app hidden">
+    <header class="topbar">
+      <div><strong>ARTS Manager</strong><span id="versionBadge"></span></div>
+      <button class="ghost" onclick="logout()">ログアウト</button>
+    </header>
+
+    <section id="homePage" class="page active">
+      <h2>ホーム</h2>
+      <div class="grid cards">
+        <div class="card"><span>月間PI</span><b id="homePi">0</b><small id="homeTarget">目標 0</small></div>
+        <div class="card"><span>達成率</span><b id="homeAch">0%</b><small id="homeRemain">残 0</small></div>
+        <div class="card"><span>イエナカ</span><b id="homeIenaka">0</b><small>光/H5G/カード/でんき</small></div>
+        <div class="card"><span>状態</span><b id="homeLock">OPEN</b><small id="homeScope">ALL</small></div>
+      </div>
+      <div class="panel"><h3>直近入力</h3><div id="recentList" class="list"></div></div>
+    </section>
+
+    <section id="inputPage" class="page input-page">
+      <div class="page-title-row">
+        <div>
+          <h2>実績入力</h2>
+          <p class="muted small">店舗・スタッフは保存後も保持。数字だけ連続入力できます。</p>
+        </div>
+        <button class="ghost" onclick="clearInputValues()">数値クリア</button>
+      </div>
+
+      <div class="panel form input-panel">
+        <div class="input-basic-grid">
+          <div><label>日付</label><input id="date" type="date" onchange="rememberInputState(); renderTodayEntries();"></div>
+          <div><label>店舗</label><select id="store" onchange="rememberInputState()"></select></div>
+          <div><label>スタッフ</label><select id="staff" onchange="rememberInputState()"></select></div>
+          <div><label>キャリア</label><select id="carrier" onchange="rememberInputState(); renderItems()"></select></div>
+        </div>
+
+        <div class="input-toolbar">
+          <div><b id="inputCarrierTitle">入力項目</b><small id="inputMeta" class="muted">0項目</small></div>
+          <div class="actions compact-actions">
+            <button onclick="setAllInputValues(0)">全0</button>
+            <button onclick="focusFirstInput()">先頭へ</button>
+          </div>
+        </div>
+
+        <div id="itemsBox" class="item-grid enhanced"></div>
+
+        <label>備考</label>
+        <textarea id="memo" rows="2" placeholder="任意：案件メモ・補足"></textarea>
+
+        <div class="save-sticky">
+          <div><small class="muted">入力中</small><b id="inputTotal">合計 0</b></div>
+          <button id="saveBtn" class="primary" onclick="saveResult()">保存</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>今日入力した実績</h3>
+        <div id="todayInputList" class="list"><p class="muted">まだ入力がありません</p></div>
+      </div>
+    </section>
+
+    <section id="dashPage" class="page">
+      <h2>ダッシュボード</h2>
+      <div class="panel filter"><select id="filterMonth" onchange="reloadDashboard()"></select><select id="filterStore" onchange="reloadDashboard()"></select><select id="filterStaff" onchange="reloadDashboard()"></select><select id="filterCarrier" onchange="reloadDashboard()"></select></div>
+      <div class="grid cards">
+        <div class="card"><span>PI</span><b id="dPi">0</b></div><div class="card"><span>SPSP</span><b id="dSpsp">0</b></div><div class="card"><span>光</span><b id="dHikari">0</b></div><div class="card"><span>home5G</span><b id="dHome5g">0</b></div>
+        <div class="card"><span>カード</span><b id="dCard">0</b></div><div class="card"><span>でんき</span><b id="dDenki">0</b></div><div class="card"><span>dバリューパス</span><b id="dValuePass">0</b></div><div class="card"><span>達成率</span><b id="dAch">0%</b></div>
+      </div>
+      <div class="panel"><h3>個人ランキング</h3><div id="ranking" class="list"></div></div>
+      <div class="panel"><h3>店舗別PI</h3><div id="storeRank" class="list"></div></div>
+    </section>
+
+    <section id="dataPage" class="page">
+      <h2>データ</h2>
+      <div class="panel"><h3>実績一覧・修正削除</h3><div id="resultList" class="list"></div></div>
+    </section>
+
+    <section id="reportPage" class="page">
+      <h2>報告</h2>
+      <div class="panel actions"><button onclick="makeReport('daily')">日報</button><button onclick="makeReport('weekly')">週報</button><button onclick="makeReport('monthly')">月報</button><button onclick="makeAi()">AI分析</button></div>
+      <textarea id="reportText" rows="16" placeholder="ここに生成文が出ます"></textarea>
+      <button class="primary" onclick="copyReport()">コピー</button>
+    </section>
+
+    <section id="adminPage" class="page">
+      <h2>設定・更新センター</h2>
+      <div class="panel">
+        <h3>更新センター V2</h3>
+        <p id="updateInfo" class="muted"></p>
+        <div class="actions">
+          <button class="primary" onclick="runUpdate()">データ更新</button>
+          <button onclick="backup()">バックアップログ</button>
+        </div>
+        <label>コード更新マニフェストURL</label>
+        <input id="manifestUrl" type="url" placeholder="https://.../arts-update-manifest.json">
+        <div class="actions">
+          <button onclick="saveManifestUrl()">URL保存</button>
+          <button onclick="checkCodeUpdate()">準備確認</button>
+          <button class="danger" onclick="runCodeUpdate()">コード更新</button>
+        </div>
+        <p class="muted small">コード更新はApps Script API有効化後に使用。通常は「データ更新」だけでOK。</p>
+      </div>
+      <div class="panel">
+        <h3>更新履歴</h3>
+        <div id="updateHistoryList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel">
+        <h3>バックアップ履歴</h3>
+        <div id="backupHistoryList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel"><h3>管理</h3><label>PI目標</label><input id="piTarget" type="number"><button onclick="saveTarget()">目標保存</button><label>月締め対象</label><input id="lockMonth" type="month"><div class="actions"><button onclick="lockMonth()">月締め</button><button onclick="unlockMonth()">解除</button></div></div>
+    </section>
+
+    <nav class="tabbar">
+      <button onclick="showPage('homePage')">🏠<span>ホーム</span></button>
+      <button onclick="showPage('inputPage')">➕<span>入力</span></button>
+      <button onclick="showPage('dashPage')">📊<span>集計</span></button>
+      <button onclick="showPage('dataPage')">📂<span>データ</span></button>
+      <button onclick="showPage('reportPage')">📝<span>報告</span></button>
+      <button id="adminTab" onclick="showPage('adminPage')">⚙️<span>設定</span></button>
+    </nav>
+  </main>
+  <?!= include('Script'); ?>
+</body>
+</html>

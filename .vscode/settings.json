@@ -1,0 +1,10 @@
+{
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": "^(Code\\.js|Index\\.html|Script\\.html|Style\\.html|appsscript\\.json)$",
+        "cmd": "C:\\WINDOWS\\system32\\cmd.exe /c clasp push"
+      }
+    ]
+  }
+}
