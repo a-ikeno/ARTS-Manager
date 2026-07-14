@@ -6,7 +6,7 @@
 const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 
 const APP = {
-  VERSION: '1.1.2',
+  VERSION: '1.1.3',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -36,10 +36,12 @@ const APP = {
     DEPLOYQUEUE: 'DeployQueueDB',
     AIQUEUE: 'AI_QUEUE',
     AIDEPLOYQUEUE: 'DEPLOY_QUEUE',
-    AIDEVROOM: 'AI開発室'
+    AIDEVROOM: 'AI開発室',
+    AIWORKER: 'AI_WORKER'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
   AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI'],
+  AIWORKER_HEADERS: ['ID','TaskID','状態','担当AI','作成日時','開始日時','完了日時','結果','ErrorMessage'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
   DEPLOYQUEUE_HEADERS: ['ID','日時','バージョン','ReleaseID','状態','リクエスト者'],
@@ -909,6 +911,56 @@ function saveAiDevRoomRequest(payload, token) {
   return safeReturn_({ ok: true, message: 'Claudeへ依頼しました。', id: id });
 }
 
+// AI Worker基盤（TASK-014）：将来Claude Codeが自動巡回して処理するためのキュー。
+// AI開発室（AIDEVROOM）のIDをTaskIDとして紐付ける。状態はWAITING/WORKING/DONE/FAILEDの4種のみ。
+function getAiWorkerQueue(token) {
+  verify_(token);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.AIWORKER);
+  return safeReturn_(rows.slice(-200).reverse());
+}
+
+function createAiWorkerTask(taskId, token) {
+  verify_(token);
+  ensureSchema_();
+  const cleanTaskId = String(taskId || '').trim();
+  if (!cleanTaskId) throw new Error('TaskIDが指定されていません。');
+  const devRoomRow = sheetObjects_(APP.SHEETS.AIDEVROOM).find(r => String(r['ID']) === cleanTaskId);
+  if (!devRoomRow) throw new Error('対象のAI開発室の依頼が見つかりません。');
+  const id = nextSeqId_(APP.SHEETS.AIWORKER, 'WRK');
+  const now = new Date();
+  sheet_(APP.SHEETS.AIWORKER).appendRow([id, cleanTaskId, 'WAITING', '', now, '', '', '', '']);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'AI Workerキューへ登録しました。', id: id });
+}
+
+function updateAiWorkerTask(payload, token) {
+  verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const id = String(payload.id || '').trim();
+  if (!id) throw new Error('IDが指定されていません。');
+  const status = payload.status !== undefined ? String(payload.status).trim() : '';
+  const validStatuses = ['WAITING', 'WORKING', 'DONE', 'FAILED'];
+  if (status && validStatuses.indexOf(status) === -1) throw new Error('不正な状態です。');
+  const sh = sheet_(APP.SHEETS.AIWORKER);
+  const data = table_(APP.SHEETS.AIWORKER);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象のAI Workerタスクが見つかりません。');
+  const map = headerMap_(sh);
+  const now = new Date();
+  if (status) {
+    sh.getRange(row.rowNumber, map['状態']).setValue(status);
+    if (status === 'WORKING' && !row.obj['開始日時'] && map['開始日時']) sh.getRange(row.rowNumber, map['開始日時']).setValue(now);
+    if ((status === 'DONE' || status === 'FAILED') && map['完了日時']) sh.getRange(row.rowNumber, map['完了日時']).setValue(now);
+  }
+  if (payload.worker !== undefined && map['担当AI']) sh.getRange(row.rowNumber, map['担当AI']).setValue(payload.worker);
+  if (payload.result !== undefined && map['結果']) sh.getRange(row.rowNumber, map['結果']).setValue(payload.result);
+  if (payload.errorMessage !== undefined && map['ErrorMessage']) sh.getRange(row.rowNumber, map['ErrorMessage']).setValue(payload.errorMessage);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: id + ' を更新しました。' });
+}
+
 function getMobileReleaseSummary(token) {
   const user = verify_(token); requireAdmin_(user);
   ensureSchema_();
@@ -1272,6 +1324,7 @@ function ensureSchema_() {
   specs[APP.SHEETS.AIQUEUE] = APP.AIQUEUE_HEADERS;
   specs[APP.SHEETS.AIDEPLOYQUEUE] = APP.AIDEPLOYQUEUE_HEADERS;
   specs[APP.SHEETS.AIDEVROOM] = APP.AIDEVROOM_HEADERS;
+  specs[APP.SHEETS.AIWORKER] = APP.AIWORKER_HEADERS;
   Object.keys(specs).forEach(name => {
     const sh = sheet_(name);
     const beforeCols = sh.getLastColumn();
