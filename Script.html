@@ -754,7 +754,10 @@ const AI_DEV_STATUS_LABELS = {
   WAITING: '🟡 受付済み',
   WORKING: '🔵 実装中',
   REVIEW: '🟠 レビュー中',
-  DONE: '🟢 完了',
+  PUSHED: '🟣 Git Push済み',
+  DEPLOY_WAITING: '⚪ 更新待ち',
+  DEPLOYED: '🟢 反映完了',
+  DONE: '✅ 完了',
   FAILED: '🔴 エラー'
 };
 function formatAiDevDateTime(v) {
@@ -770,11 +773,21 @@ function renderAiDevRoomList(rows) {
   el.innerHTML = list.map(r => {
     const state = String(r['状態'] || '');
     const label = AI_DEV_STATUS_LABELS[state] || state;
+    const taskId = r['TaskID'] || '-';
+    const worker = r['担当AI'] || '-';
+    const started = r['開始日時'] ? formatAiDevDateTime(r['開始日時']) : '-';
+    const finished = r['完了日時'] ? formatAiDevDateTime(r['完了日時']) : '-';
     return `<div class="ai-dev-card">
       <span class="status-badge status-${esc(state)}">${esc(label)}</span>
       <b>${esc(r['ID'])}</b>
       <p>${esc(r['依頼内容'])}</p>
       <small>優先度：${esc(r['優先度'])}<br>依頼者：${esc(r['依頼者'])}<br>${esc(formatAiDevDateTime(r['日時']))}</small>
+      <div class="ai-dev-meta">
+        <span>TaskID：${esc(taskId)}</span>
+        <span>担当AI：${esc(worker)}</span>
+        <span>開始：${esc(started)}</span>
+        <span>完了：${esc(finished)}</span>
+      </div>
     </div>`;
   }).join('') || '<p class="muted">依頼はまだありません</p>';
 }
