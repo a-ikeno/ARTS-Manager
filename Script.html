@@ -750,11 +750,33 @@ async function submitAiDevRequest() {
     await loadAiDevRoom();
   } catch (e) { toast(e.message || String(e)); }
 }
+const AI_DEV_STATUS_LABELS = {
+  WAITING: '🟡 受付済み',
+  WORKING: '🔵 実装中',
+  REVIEW: '🟠 レビュー中',
+  DONE: '🟢 完了',
+  FAILED: '🔴 エラー'
+};
+function formatAiDevDateTime(v) {
+  const s = String(v || '').trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (m) return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+  return s;
+}
 function renderAiDevRoomList(rows) {
   const el = $('aiDevRoomList');
   if (!el) return;
   const list = rows || [];
-  el.innerHTML = list.map(r => `<div class="row"><div><b>${esc(r['ID'])}</b><br><small>${esc(r['依頼内容'])}</small><br><small>優先度${esc(r['優先度'])} / 依頼者${esc(r['依頼者'])} / ${esc(formatYMD(r['日時']) || r['日時'])}</small></div><span class="status-badge status-${esc(r['状態'])}">${esc(r['状態'])}</span></div>`).join('') || '<p class="muted">依頼はまだありません</p>';
+  el.innerHTML = list.map(r => {
+    const state = String(r['状態'] || '');
+    const label = AI_DEV_STATUS_LABELS[state] || state;
+    return `<div class="ai-dev-card">
+      <span class="status-badge status-${esc(state)}">${esc(label)}</span>
+      <b>${esc(r['ID'])}</b>
+      <p>${esc(r['依頼内容'])}</p>
+      <small>優先度：${esc(r['優先度'])}<br>依頼者：${esc(r['依頼者'])}<br>${esc(formatAiDevDateTime(r['日時']))}</small>
+    </div>`;
+  }).join('') || '<p class="muted">依頼はまだありません</p>';
 }
 function collectDebugInfo() {
   const activePage = document.querySelector('.page.active');

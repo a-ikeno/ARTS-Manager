@@ -39,7 +39,7 @@ const APP = {
     AIDEVROOM: 'AI開発室'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
-  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態'],
+  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
   DEPLOYQUEUE_HEADERS: ['ID','日時','バージョン','ReleaseID','状態','リクエスト者'],
@@ -875,7 +875,7 @@ function saveAiDevRoomRequest(payload, token) {
   const priority = String(payload.priority || '中').trim() || '中';
   const id = nextSeqId_(APP.SHEETS.AIDEVROOM, 'AIDEV');
   const now = new Date();
-  sheet_(APP.SHEETS.AIDEVROOM).appendRow([id, now, content, priority, user.staffName, 'WAITING']);
+  sheet_(APP.SHEETS.AIDEVROOM).appendRow([id, now, content, priority, user.staffName, 'WAITING', '', '', '', '']);
   clearSheetObjectsCache(true);
   return safeReturn_({ ok: true, message: 'Claudeへ依頼しました。', id: id });
 }
