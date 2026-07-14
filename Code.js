@@ -35,9 +35,11 @@ const APP = {
     RELEASEDB: 'ReleaseDB',
     DEPLOYQUEUE: 'DeployQueueDB',
     AIQUEUE: 'AI_QUEUE',
-    AIDEPLOYQUEUE: 'DEPLOY_QUEUE'
+    AIDEPLOYQUEUE: 'DEPLOY_QUEUE',
+    AIDEVROOM: 'AI開発室'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
+  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
   DEPLOYQUEUE_HEADERS: ['ID','日時','バージョン','ReleaseID','状態','リクエスト者'],
@@ -857,6 +859,27 @@ function saveDeployQueueItem(payload, token) {
   return safeReturn_({ ok: true, message: 'Deploy Queueへ登録しました。', id: id });
 }
 
+function getAiDevRoomRequests(token) {
+  verify_(token);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.AIDEVROOM);
+  return safeReturn_(rows.slice(-200).reverse());
+}
+
+function saveAiDevRoomRequest(payload, token) {
+  const user = verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const content = String(payload.content || '').trim();
+  if (!content) throw new Error('開発したい内容を入力してください。');
+  const priority = String(payload.priority || '中').trim() || '中';
+  const id = nextSeqId_(APP.SHEETS.AIDEVROOM, 'AIDEV');
+  const now = new Date();
+  sheet_(APP.SHEETS.AIDEVROOM).appendRow([id, now, content, priority, user.staffName, 'WAITING']);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'Claudeへ依頼しました。', id: id });
+}
+
 function getMobileReleaseSummary(token) {
   const user = verify_(token); requireAdmin_(user);
   ensureSchema_();
@@ -1219,6 +1242,7 @@ function ensureSchema_() {
   specs[APP.SHEETS.DEPLOYQUEUE] = APP.DEPLOYQUEUE_HEADERS;
   specs[APP.SHEETS.AIQUEUE] = APP.AIQUEUE_HEADERS;
   specs[APP.SHEETS.AIDEPLOYQUEUE] = APP.AIDEPLOYQUEUE_HEADERS;
+  specs[APP.SHEETS.AIDEVROOM] = APP.AIDEVROOM_HEADERS;
   Object.keys(specs).forEach(name => {
     const sh = sheet_(name);
     const beforeCols = sh.getLastColumn();

@@ -71,6 +71,8 @@ function server(fn, ...args) {
       case 'saveDeployQueueItem': return runner.saveDeployQueueItem(...args);
       case 'getMobileReleaseSummary': return runner.getMobileReleaseSummary(...args);
       case 'requestDeploy': return runner.requestDeploy(...args);
+      case 'getAiDevRoomRequests': return runner.getAiDevRoomRequests(...args);
+      case 'saveAiDevRoomRequest': return runner.saveAiDevRoomRequest(...args);
       default: return reject(new Error('Unsupported function: ' + fn));
     }
   });
@@ -633,6 +635,9 @@ async function showPage(id) {
   if (id === 'adminPage' && STATE.token) {
     await refreshUpdateCenter();
   }
+  if (id === 'aiDevPage' && STATE.token) {
+    await loadAiDevRoom();
+  }
 }
 let DEV_REQUESTS = [];
 async function loadDevCenter() {
@@ -723,6 +728,33 @@ function renderDevRequests(rows) {
     $('devSummary').textContent = `未着手 ${countOf('未着手')}件 / 進行中 ${countOf('進行中')}件 / 完了 ${countOf('完了')}件`;
   }
   el.innerHTML = list.map(r => `<div class="row" onclick="showDevDetail('${escAttr(r['ID'])}')"><div><b>${esc(r['ID'])} ${esc(r['タイトル'])}</b><br><small>優先度${esc(r['優先度'])} / 担当${esc(r['担当'])} / 更新日${esc(formatYMD(r['更新日']) || r['更新日'])}</small></div><b>${esc(r['状態'])}</b></div>`).join('') || '<p class="muted">タスクがありません</p>';
+}
+async function loadAiDevRoom() {
+  try {
+    const rows = await server('getAiDevRoomRequests', STATE.token);
+    renderAiDevRoomList(Array.isArray(rows) ? rows : []);
+  } catch (e) {
+    renderAiDevRoomList([]);
+    toast(e.message || String(e));
+  }
+}
+async function submitAiDevRequest() {
+  try {
+    const content = $('aiDevContent') ? $('aiDevContent').value.trim() : '';
+    if (!content) { toast('開発したい内容を入力してください'); return; }
+    const priorityInput = document.querySelector('input[name="aiDevPriority"]:checked');
+    const priority = priorityInput ? priorityInput.value : '中';
+    const r = await server('saveAiDevRoomRequest', { content: content, priority: priority }, STATE.token);
+    toast((r && r.message) || 'Claudeへ依頼しました');
+    if ($('aiDevContent')) $('aiDevContent').value = '';
+    await loadAiDevRoom();
+  } catch (e) { toast(e.message || String(e)); }
+}
+function renderAiDevRoomList(rows) {
+  const el = $('aiDevRoomList');
+  if (!el) return;
+  const list = rows || [];
+  el.innerHTML = list.map(r => `<div class="row"><div><b>${esc(r['ID'])}</b><br><small>${esc(r['依頼内容'])}</small><br><small>優先度${esc(r['優先度'])} / 依頼者${esc(r['依頼者'])} / ${esc(formatYMD(r['日時']) || r['日時'])}</small></div><span class="status-badge status-${esc(r['状態'])}">${esc(r['状態'])}</span></div>`).join('') || '<p class="muted">依頼はまだありません</p>';
 }
 function collectDebugInfo() {
   const activePage = document.querySelector('.page.active');

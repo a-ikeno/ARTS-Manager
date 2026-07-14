@@ -132,7 +132,27 @@
         <div id="backupHistoryList" class="list"><p class="muted">読み込み中</p></div>
       </div>
       <div class="panel"><h3>管理</h3><label>PI目標</label><input id="piTarget" type="number"><button onclick="saveTarget()">目標保存</button><label>月締め対象</label><input id="lockMonth" type="month"><div class="actions"><button onclick="lockMonth()">月締め</button><button onclick="unlockMonth()">解除</button></div></div>
-      <div class="panel"><h3>開発</h3><div class="actions"><button onclick="showPage('devCenterPage')">🛠 開発センター</button><button onclick="showPage('aiAssistantPage')">🧠 AIアシスタント</button><button onclick="showPage('releaseCenterPage')">📦 リリースセンター</button></div></div>
+      <div class="panel"><h3>開発</h3><div class="actions"><button onclick="showPage('devCenterPage')">🛠 開発センター</button><button onclick="showPage('aiAssistantPage')">🧠 AIアシスタント</button><button onclick="showPage('releaseCenterPage')">📦 リリースセンター</button><button onclick="showPage('aiDevPage')">🤖 AI開発室</button></div></div>
+    </section>
+
+    <section id="aiDevPage" class="page">
+      <h2>🤖 AI開発室</h2>
+      <div class="panel">
+        <h3>開発したい内容</h3>
+        <textarea id="aiDevContent" rows="6" placeholder="開発したい内容を入力してください"></textarea>
+        <label>優先度</label>
+        <div class="actions">
+          <label><input type="radio" name="aiDevPriority" value="高"> 高</label>
+          <label><input type="radio" name="aiDevPriority" value="中" checked> 中</label>
+          <label><input type="radio" name="aiDevPriority" value="低"> 低</label>
+        </div>
+        <button class="primary" onclick="submitAiDevRequest()">Claudeへ依頼</button>
+      </div>
+      <div class="panel">
+        <h3>依頼一覧</h3>
+        <div id="aiDevRoomList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel"><button onclick="showPage('adminPage')">戻る</button></div>
     </section>
 
     <section id="devCenterPage" class="page">
