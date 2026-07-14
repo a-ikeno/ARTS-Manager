@@ -29,8 +29,29 @@ const APP = {
     LOG: '更新履歴',
     BACKUP: 'バックアップログ',
     UPDATE: '更新センター',
-    DEVLOG: '開発ログ'
+    DEVLOG: '開発ログ',
+    DEVREQ: '開発依頼DB',
+    DEBUGLOG: 'DebugLogDB',
+    RELEASEDB: 'ReleaseDB',
+    DEPLOYQUEUE: 'DeployQueueDB',
+    AIQUEUE: 'AI_QUEUE',
+    AIDEPLOYQUEUE: 'DEPLOY_QUEUE'
   },
+  AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
+  AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
+  RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
+  DEPLOYQUEUE_HEADERS: ['ID','日時','バージョン','ReleaseID','状態','リクエスト者'],
+  DEVREQ_HEADERS: ['ID','日時','種類','タイトル','内容','優先度','状態','担当','作成者','更新日'],
+  DEBUGLOG_HEADERS: [
+    'ID','日時','依頼ID',
+    'Version','Build','アプリ更新日時',
+    'ログインユーザー','権限','店舗','キャリア',
+    '端末名','OS','ブラウザ','画面サイズ','言語','タイムゾーン',
+    '発生日時','表示ページ','URL','ネットワーク状態','オンライン状態',
+    'JSエラー','ConsoleError','ConsoleWarning','ConsoleLog直近100件',
+    'STATE','Filter','ログイン状態',
+    'スクリーンショット','画像URL'
+  ],
   RESULT_HEADERS: [
     'ID','作成日時','更新日時','対象日','年','月','年月','店舗','スタッフ','キャリア','項目','件数','備考','入力者','操作','元ID','有効'
   ]
@@ -314,21 +335,32 @@ function saveResult(payload, token) {
     if (isLocked_(ym)) throw new Error('この月は月締め済みです: ' + ym);
 
     const items = payload.results || {};
-    const rows = [];
+    const rowObjs = [];
     Object.keys(items).forEach(item => {
       const value = Number(items[item] || 0);
-      rows.push(makeResultRow_({
+      rowObjs.push(makeResultRow_({
         date, store: payload.store, staffName: payload.staffName, carrier: payload.carrier,
         item, value, memo: payload.memo || '', actor: user.staffName, op: 'CREATE', sourceId: ''
       }));
     });
-    if (!rows.length) throw new Error('保存対象がありません。1項目以上入力してください。');
+    if (!rowObjs.length) throw new Error('保存対象がありません。1項目以上入力してください。');
     const sh = sheet_(APP.SHEETS.RESULTS);
-    sh.getRange(sh.getLastRow() + 1, 1, rows.length, APP.RESULT_HEADERS.length).setValues(rows);
-    log_('CREATE', rows.map(r => r[0]).join(','), user.staffName, `${fmt_(date,'yyyy-MM-dd')} ${payload.store} ${payload.carrier} ${rows.length}件`);
+    const map = headerMap_(sh);
+    const lastCol = Math.max(sh.getLastColumn(), APP.RESULT_HEADERS.length);
+    const startRow = sh.getLastRow() + 1;
+    const rowsToWrite = rowObjs.map(obj => {
+      const arr = new Array(lastCol).fill('');
+      Object.keys(obj).forEach(key => {
+        const col = map[key];
+        if (col) arr[col - 1] = obj[key];
+      });
+      return arr;
+    });
+    sh.getRange(startRow, 1, rowsToWrite.length, lastCol).setValues(rowsToWrite);
+    log_('CREATE', rowObjs.map(r => r['ID']).join(','), user.staffName, `${fmt_(date,'yyyy-MM-dd')} ${payload.store} ${payload.carrier} ${rowObjs.length}件`);
     // invalidate sheetObjects cache so subsequent reads are fresh
     clearSheetObjectsCache(true);
-    return { ok: true, message: `${rows.length}件保存しました。`, dashboard: getDashboard({ month: ym }, token), results: listResults({ month: ym }, token) };
+    return { ok: true, message: `${rowObjs.length}件保存しました。`, dashboard: getDashboard({ month: ym }, token), results: listResults({ month: ym }, token) };
   } finally {
     const __t1 = Date.now();
     try { Logger.log('TIMING saveResult start=%s end=%s duration=%dms', new Date(__t0).toISOString(), new Date(__t1).toISOString(), __t1 - __t0); } catch (e) {}
@@ -385,10 +417,17 @@ function listResults(filter, token) {
     filter = filter || {};
     const rows = activeResults_().filter(r => matchFilter_(r, filter));
     const scoped = user.isAdmin ? rows : rows.filter(r => String(r['スタッフ']) === String(user.staffName));
-    return scoped.slice(-200).reverse().map(r => ({
+    const nonZero = scoped.filter(r => Number(r['件数'] || 0) > 0);
+    const out = nonZero.slice(-200).reverse().filter(r => !isNaN(new Date(r['対象日']).getTime())).map(r => ({
       id: r['ID'], date: fmt_(new Date(r['対象日']), 'yyyy-MM-dd'), year: r['年'], month: r['月'], ym: r['年月'],
       store: r['店舗'], staff: r['スタッフ'], carrier: r['キャリア'], item: r['項目'], value: Number(r['件数'] || 0), memo: r['備考'] || ''
     }));
+    try {
+      const jsonStr = JSON.stringify(out);
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      throw e;
+    }
   } finally {
     const __t1 = Date.now();
     try { Logger.log('TIMING listResults start=%s end=%s duration=%dms', new Date(__t0).toISOString(), new Date(__t1).toISOString(), __t1 - __t0); } catch (e) {}
@@ -410,12 +449,14 @@ function getDashboard(filter, token) {
     const byStaff = {};
     const daily = {};
     rows.forEach(r => {
+      const targetDate = new Date(r['対象日']);
+      if (isNaN(targetDate.getTime())) return; // 対象日が空・不正な行は集計から除外
       const value = Number(r['件数'] || 0);
       const staff = r['スタッフ'] || '未設定';
       byStaff[staff] = byStaff[staff] || { staff, pi: 0, total: 0 };
       byStaff[staff].total += value;
       if (isPi_(r['項目'])) byStaff[staff].pi += value;
-      const d = fmt_(new Date(r['対象日']), 'MM/dd');
+      const d = fmt_(targetDate, 'MM/dd');
       daily[d] = daily[d] || { date: d, pi: 0, total: 0 };
       daily[d].total += value;
       if (isPi_(r['項目'])) daily[d].pi += value;
@@ -431,15 +472,7 @@ function getDashboard(filter, token) {
     const proposal = Number(totalByItem['提案数'] || 0);
     const ienaka = hikari + home5g + card + denki;
     const target = Number(settings_()['PI目標'] || 40);
-    console.log('[getDashboard] build', {
-      filter: filter,
-      month: month,
-      rows: rows.length,
-      recentSourceRows: rows.length,
-      recentWillBeEmpty: rows.length === 0,
-      scope: user.isAdmin ? 'ALL' : user.staffName
-    });
-    return {
+    const out = {
       month,
       locked: isLocked_(month),
       filter,
@@ -453,6 +486,12 @@ function getDashboard(filter, token) {
       recent: listResults({}, token).slice(0, 10),
       filing: getFilingOptions_(user)
     };
+    try {
+      const jsonStr = JSON.stringify(out);
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      throw e;
+    }
   } finally {
     const __t1 = Date.now();
     try { Logger.log('TIMING getDashboard start=%s end=%s duration=%dms', new Date(__t0).toISOString(), new Date(__t1).toISOString(), __t1 - __t0); } catch (e) {}
@@ -466,8 +505,9 @@ function getFilingOptions(tokenOrUser) {
 function getFilingOptions_(user) {
   let rows = activeResults_();
   if (user && !user.isAdmin) rows = rows.filter(r => String(r['スタッフ']) === String(user.staffName));
-  const years = unique_(rows.map(r => r['年']).filter(Boolean)).sort().reverse();
-  const months = unique_(rows.map(r => r['年月']).filter(Boolean)).sort().reverse();
+  const validDates = rows.map(r => new Date(r['対象日'])).filter(d => !isNaN(d.getTime()));
+  const years = unique_(validDates.map(d => fmt_(d, 'yyyy'))).sort().reverse();
+  const months = unique_(validDates.map(d => fmt_(d, 'yyyy-MM'))).sort().reverse();
   const stores = unique_(rows.map(r => r['店舗']).filter(Boolean)).sort();
   const staff = unique_(rows.map(r => r['スタッフ']).filter(Boolean)).sort();
   const carriers = unique_(rows.map(r => r['キャリア']).filter(Boolean)).sort();
@@ -553,7 +593,7 @@ function getUpdateStatus_() {
   const st = settings_();
   const current = String(st['現在バージョン'] || APP.VERSION);
   const manifestUrl = String(st['更新マニフェストURL'] || '').trim();
-  return {
+  const out = {
     ok: true,
     currentVersion: current,
     bundledVersion: APP.VERSION,
@@ -566,6 +606,7 @@ function getUpdateStatus_() {
     readiness: getCodeUpdateReadiness_(),
     history: sheetObjects_(APP.SHEETS.UPDATE).slice(-30).reverse()
   };
+  return JSON.parse(JSON.stringify(out));
 }
 function runAppUpdate(token) {
   const user = verify_(token); requireAdmin_(user);
@@ -603,14 +644,21 @@ function saveUpdateManifestUrl(url, token) {
 }
 function checkCodeUpdateReadiness(token) {
   const user = verify_(token); requireAdmin_(user);
-  return { ok: true, readiness: getCodeUpdateReadiness_(), update: getUpdateStatus_() };
+  const out = { ok: true, readiness: getCodeUpdateReadiness_(), update: getUpdateStatus_() };
+  return JSON.parse(JSON.stringify(out));
 }
 function getCodeUpdateReadiness_() {
   const out = { scriptId: '', canUseUrlFetch: false, hasManifestUrl: false, message: '' };
   try { out.scriptId = ScriptApp.getScriptId(); } catch (e) { out.scriptId = ''; }
   try { out.canUseUrlFetch = !!UrlFetchApp; } catch (e) { out.canUseUrlFetch = false; }
   try { out.hasManifestUrl = !!String(settings_()['更新マニフェストURL'] || '').trim(); } catch (e) { out.hasManifestUrl = false; }
-  out.message = out.scriptId ? 'コード更新準備OK。Apps Script APIが有効なら実行できます。' : 'スクリプトIDが取得できません。';
+  if (!out.scriptId) {
+    out.message = 'スクリプトIDが取得できません。';
+  } else if (!out.hasManifestUrl) {
+    out.message = '更新マニフェストURLが未設定です。';
+  } else {
+    out.message = 'コード更新準備OK。Apps Script APIが有効なら実行できます。';
+  }
   return out;
 }
 function runCodeUpdateFromManifest(token) {
@@ -629,12 +677,69 @@ function runCodeUpdateFromManifest(token) {
   const current = fetchScriptContent_(scriptId);
   const merged = mergeProjectFiles_(current.files || [], manifest.files);
   updateScriptContent_(scriptId, merged);
-  setSetting_('現在バージョン', manifest.version);
-  setSetting_('最終更新日時', fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss'));
-  setSetting_('最終更新者', user.staffName);
-  sheet_(APP.SHEETS.UPDATE).appendRow([new Date(), before, manifest.version, user.staffName, (manifest.notes || []).join(' / ') || 'コード更新', 'CODE_DONE']);
-  log_('CODE_UPDATE', manifest.version, user.staffName, `${before} → ${manifest.version}`);
-  return { ok: true, message: 'コード更新を実行しました。新バージョンで再デプロイが必要な場合があります。', update: getUpdateStatus_() };
+
+  let deployError = '';
+  try {
+    deployToProduction_(scriptId, manifest.version, user.staffName);
+  } catch (e) {
+    deployError = String(e && e.message ? e.message : e);
+  }
+
+  if (!deployError) {
+    setSetting_('現在バージョン', manifest.version);
+    setSetting_('最終更新日時', fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss'));
+    setSetting_('最終更新者', user.staffName);
+    sheet_(APP.SHEETS.UPDATE).appendRow([new Date(), before, manifest.version, user.staffName, (manifest.notes || []).join(' / ') || 'コード更新', 'CODE_DONE_DEPLOYED']);
+    log_('CODE_UPDATE', manifest.version, user.staffName, `${before} → ${manifest.version}`);
+    return { ok: true, message: 'コード更新・公開が完了しました。', update: getUpdateStatus_() };
+  }
+
+  sheet_(APP.SHEETS.UPDATE).appendRow([new Date(), before, manifest.version, user.staffName, 'DEPLOY_FAILED: ' + deployError, 'CODE_DONE_DEPLOY_FAILED']);
+  log_('CODE_UPDATE_DEPLOY_FAILED', manifest.version, user.staffName, deployError);
+  return { ok: false, partial: true, message: 'コード更新は完了しましたが、自動公開に失敗しました。\n----\n' + deployError + '\n----', update: getUpdateStatus_() };
+}
+function deployToProduction_(scriptId, versionDescription, actorName) {
+  const productionDeploymentId = String(settings_()['本番DeploymentID'] || '').trim();
+  if (!productionDeploymentId) throw new Error('本番DeploymentIDが設定シートに登録されていません。');
+  const version = createScriptVersion_(scriptId, 'ARTS Manager ' + versionDescription);
+  const deployments = listScriptDeployments_(scriptId);
+  const target = deployments.find(d => d.deploymentId === productionDeploymentId);
+  if (!target) throw new Error('本番DeploymentID(' + productionDeploymentId + ')に一致するDeploymentが見つかりません。');
+  updateScriptDeployment_(scriptId, productionDeploymentId, version.versionNumber, 'ARTS Manager ' + versionDescription + ' / ' + actorName);
+}
+function createScriptVersion_(scriptId, description) {
+  const url = 'https://script.googleapis.com/v1/projects/' + encodeURIComponent(scriptId) + '/versions';
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ description: description || '' }),
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('バージョン作成失敗: HTTP ' + res.getResponseCode() + ' / ' + res.getContentText());
+  return JSON.parse(res.getContentText());
+}
+function listScriptDeployments_(scriptId) {
+  const url = 'https://script.googleapis.com/v1/projects/' + encodeURIComponent(scriptId) + '/deployments';
+  const res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('デプロイ一覧取得失敗: HTTP ' + res.getResponseCode() + ' / ' + res.getContentText());
+  const json = JSON.parse(res.getContentText());
+  return json.deployments || [];
+}
+function updateScriptDeployment_(scriptId, deploymentId, versionNumber, description) {
+  const url = 'https://script.googleapis.com/v1/projects/' + encodeURIComponent(scriptId) + '/deployments/' + encodeURIComponent(deploymentId);
+  const res = UrlFetchApp.fetch(url, {
+    method: 'put',
+    contentType: 'application/json',
+    payload: JSON.stringify({ deploymentConfig: { scriptId: scriptId, versionNumber: versionNumber, manifestFileName: 'appsscript', description: description || '' } }),
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('デプロイ更新失敗: HTTP ' + res.getResponseCode() + ' / ' + res.getContentText());
+  return JSON.parse(res.getContentText());
 }
 function fetchScriptContent_(scriptId) {
   const url = 'https://script.googleapis.com/v1/projects/' + encodeURIComponent(scriptId) + '/content';
@@ -676,6 +781,354 @@ function createBackupLog_(target, actor, type) {
   const count = Math.max(0, sheet_(APP.SHEETS.RESULTS).getLastRow() - 1);
   sheet_(APP.SHEETS.BACKUP).appendRow([new Date(), type, target, actor, '実績DB ' + count + '行 / データ保持']);
   clearSheetObjectsCache(true);
+}
+
+function getDevRequests(token) {
+  verify_(token);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.DEVREQ);
+  return safeReturn_(rows.slice(-200).reverse());
+}
+
+function getAiQueue(token) {
+  verify_(token);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.AIQUEUE);
+  return safeReturn_(rows.slice(-200).reverse());
+}
+
+function buildAiQueuePrompt_(devReq) {
+  const updated = devReq['更新日'] ? new Date(devReq['更新日']) : null;
+  const updatedStr = (updated && !isNaN(updated.getTime())) ? fmt_(updated, 'yyyy-MM-dd HH:mm') : String(devReq['更新日'] || '');
+  return [
+    'TaskID: ' + (devReq['ID'] || ''),
+    '種類: ' + (devReq['種類'] || ''),
+    'タイトル: ' + (devReq['タイトル'] || ''),
+    '内容: ' + (devReq['内容'] || ''),
+    '優先度: ' + (devReq['優先度'] || ''),
+    '状態: ' + (devReq['状態'] || ''),
+    '担当: ' + (devReq['担当'] || ''),
+    '作成者: ' + (devReq['作成者'] || ''),
+    '更新日: ' + updatedStr,
+    '',
+    '【依頼】',
+    'このタスクだけを対象に、必要最小限で実装してください。',
+    '既存機能への影響を避けてください。'
+  ].join('\n');
+}
+
+function saveAiQueueItem(payload, token) {
+  verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const taskId = String(payload.taskId || '').trim();
+  if (!taskId) throw new Error('TaskIDが指定されていません。');
+  const devReq = sheetObjects_(APP.SHEETS.DEVREQ).find(r => String(r['ID']) === taskId);
+  if (!devReq) throw new Error('対象の開発依頼が見つかりません。');
+  const id = nextSeqId_(APP.SHEETS.AIQUEUE, 'AIQ');
+  const now = new Date();
+  const prompt = buildAiQueuePrompt_(devReq);
+  sheet_(APP.SHEETS.AIQUEUE).appendRow([id, taskId, 'WAITING', 'Claude', devReq['優先度'] || '', now, '', '', prompt, '', '', '', '', '', '']);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'Claude Queueへ登録しました。', id: id });
+}
+
+function getDeployQueue(token) {
+  verify_(token);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.AIDEPLOYQUEUE);
+  return safeReturn_(rows.slice(-200).reverse());
+}
+
+function saveDeployQueueItem(payload, token) {
+  verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const aiQueueId = String(payload.aiQueueId || '').trim();
+  if (!aiQueueId) throw new Error('AIQueueIDが指定されていません。');
+  const aiQueueRow = sheetObjects_(APP.SHEETS.AIQUEUE).find(r => String(r['ID']) === aiQueueId);
+  if (!aiQueueRow) throw new Error('対象のAI Queueが見つかりません。');
+  const existing = sheetObjects_(APP.SHEETS.AIDEPLOYQUEUE).find(r => String(r['AIQueueID']) === aiQueueId);
+  if (existing) return safeReturn_({ ok: true, message: '既にDeploy Queueへ登録済みです。', id: existing['ID'] });
+  const id = nextSeqId_(APP.SHEETS.AIDEPLOYQUEUE, 'DPQ');
+  const now = new Date();
+  sheet_(APP.SHEETS.AIDEPLOYQUEUE).appendRow([id, aiQueueRow['TaskID'] || '', aiQueueId, 'READY', aiQueueRow['BuildVersion'] || '', now, now, '', aiQueueRow['担当AI'] || '', '']);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'Deploy Queueへ登録しました。', id: id });
+}
+
+function getMobileReleaseSummary(token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const currentVersion = String(settings_()['現在バージョン'] || APP.VERSION);
+  const releases = sheetObjects_(APP.SHEETS.RELEASEDB);
+  const latestRelease = releases[releases.length - 1];
+  const nextVersion = latestRelease ? String(latestRelease['バージョン'] || '-') : '-';
+  const deployRows = sheetObjects_(APP.SHEETS.AIDEPLOYQUEUE);
+  const readyQueue = deployRows.filter(r => String(r['状態']) === 'READY');
+  const deployingCount = deployRows.filter(r => String(r['状態']) === 'DEPLOYING').length;
+  return safeReturn_({
+    ok: true,
+    currentVersion: currentVersion,
+    nextVersion: nextVersion,
+    readyCount: readyQueue.length,
+    deployingCount: deployingCount,
+    readyQueue: readyQueue.slice(-50).reverse(),
+    recentReleases: releases.slice(-5).reverse()
+  });
+}
+
+function requestDeploy(payload, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  payload = payload || {};
+  const id = String(payload.id || '').trim();
+  if (!id) throw new Error('IDが指定されていません。');
+  const sh = sheet_(APP.SHEETS.AIDEPLOYQUEUE);
+  const data = table_(APP.SHEETS.AIDEPLOYQUEUE);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象のDeploy Queueが見つかりません。');
+  const map = headerMap_(sh);
+  if (map['状態']) sh.getRange(row.rowNumber, map['状態']).setValue('DEPLOYING');
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'Deployを開始しました。' });
+}
+
+function getNextDeployJob(token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const rows = sheetObjects_(APP.SHEETS.AIDEPLOYQUEUE);
+  const job = rows.find(r => String(r['状態']) === 'DEPLOYING');
+  if (!job) return safeReturn_(null);
+  return safeReturn_({
+    'ID': job['ID'],
+    'TaskID': job['TaskID'],
+    'AIQueueID': job['AIQueueID'],
+    'BuildVersion': job['BuildVersion'],
+    '担当AI': job['担当AI']
+  });
+}
+
+function finishDeployJob(deployQueueId, result, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const id = String(deployQueueId || '').trim();
+  if (!id) throw new Error('DeployQueueIDが指定されていません。');
+  const normalizedResult = String(result || '').trim().toUpperCase();
+  if (normalizedResult !== 'SUCCESS' && normalizedResult !== 'FAILED') throw new Error('Resultは SUCCESS または FAILED を指定してください。');
+  const sh = sheet_(APP.SHEETS.AIDEPLOYQUEUE);
+  const data = table_(APP.SHEETS.AIDEPLOYQUEUE);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象のDeploy Queueが見つかりません。');
+  const map = headerMap_(sh);
+  const newStatus = normalizedResult === 'SUCCESS' ? 'DEPLOYED' : 'FAILED';
+  if (map['状態']) sh.getRange(row.rowNumber, map['状態']).setValue(newStatus);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'Deploy結果を反映しました。', status: newStatus });
+}
+
+function createGitHubActionPayload(deployQueueId, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const id = String(deployQueueId || '').trim();
+  if (!id) throw new Error('DeployQueueIDが指定されていません。');
+  const sh = sheet_(APP.SHEETS.AIDEPLOYQUEUE);
+  const data = table_(APP.SHEETS.AIDEPLOYQUEUE);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象のDeploy Queueが見つかりません。');
+  if (String(row.obj['状態']) !== 'DEPLOYING') throw new Error('状態がDEPLOYINGではありません。');
+  const map = headerMap_(sh);
+  if (map['備考']) sh.getRange(row.rowNumber, map['備考']).setValue('GitHub Actions payload generated');
+  clearSheetObjectsCache(true);
+  return safeReturn_({
+    deployQueueId: row.obj['ID'],
+    taskId: row.obj['TaskID'],
+    aiQueueId: row.obj['AIQueueID'],
+    buildVersion: row.obj['BuildVersion'],
+    actor: row.obj['担当AI'],
+    requestedAt: fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss'),
+    source: 'ARTS_MANAGER_MOBILE_RELEASE'
+  });
+}
+
+function markGitHubActionDispatched(deployQueueId, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const id = String(deployQueueId || '').trim();
+  if (!id) throw new Error('DeployQueueIDが指定されていません。');
+  const sh = sheet_(APP.SHEETS.AIDEPLOYQUEUE);
+  const data = table_(APP.SHEETS.AIDEPLOYQUEUE);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象のDeploy Queueが見つかりません。');
+  if (String(row.obj['状態']) !== 'DEPLOYING') throw new Error('状態がDEPLOYINGではありません。');
+  const map = headerMap_(sh);
+  if (map['備考']) sh.getRange(row.rowNumber, map['備考']).setValue('GitHub Actions dispatched');
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'GitHub Actions dispatchedを記録しました。' });
+}
+
+function saveDevRequest(payload, token) {
+  const user = verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const type = String(payload.type || '').trim();
+  const title = String(payload.title || '').trim();
+  if (!type) throw new Error('種類を選択してください。');
+  if (!title) throw new Error('タイトルを入力してください。');
+  const prefixMap = { 'バグ': 'BUG', '新機能': 'REQ', 'UI改善': 'UI', 'その他': 'ETC' };
+  const prefix = prefixMap[type] || 'ETC';
+  const rows = sheetObjects_(APP.SHEETS.DEVREQ);
+  const nums = rows
+    .map(r => String(r['ID'] || ''))
+    .filter(id => id.indexOf(prefix + '-') === 0)
+    .map(id => parseInt(id.slice(prefix.length + 1), 10))
+    .filter(n => !isNaN(n));
+  const next = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+  const id = prefix + '-' + ('000' + next).slice(-3);
+  const now = new Date();
+  sheet_(APP.SHEETS.DEVREQ).appendRow([id, now, type, title, payload.content || '', payload.priority || '', '未着手', payload.assignee || '', user.staffName, now]);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: id + ' を登録しました。', id });
+}
+
+function updateDevRequest(payload, token) {
+  verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const id = String(payload.id || '').trim();
+  if (!id) throw new Error('IDが指定されていません。');
+  const sh = sheet_(APP.SHEETS.DEVREQ);
+  const data = table_(APP.SHEETS.DEVREQ);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象の依頼が見つかりません。');
+  const map = headerMap_(sh);
+  if (payload.status !== undefined && map['状態']) sh.getRange(row.rowNumber, map['状態']).setValue(payload.status);
+  if (payload.assignee !== undefined && map['担当']) sh.getRange(row.rowNumber, map['担当']).setValue(payload.assignee);
+  if (payload.priority !== undefined && map['優先度']) sh.getRange(row.rowNumber, map['優先度']).setValue(payload.priority);
+  if (map['更新日']) sh.getRange(row.rowNumber, map['更新日']).setValue(new Date());
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: id + ' を更新しました。' });
+}
+
+function truncateForCell_(v, max) {
+  const s = String(v || '');
+  return s.length > max ? s.slice(0, max) + '...(truncated)' : s;
+}
+
+function saveDebugLog(payload, token) {
+  const user = verify_(token);
+  ensureSchema_();
+  payload = payload || {};
+  const app = payload.app || {};
+  const u = payload.user || {};
+  const env = payload.env || {};
+  const occurred = payload.occurred || {};
+  const dbg = payload.debug || {};
+  const state = payload.state || {};
+  const sh = sheet_(APP.SHEETS.DEBUGLOG);
+  const map = headerMap_(sh);
+  const lastCol = Math.max(sh.getLastColumn(), APP.DEBUGLOG_HEADERS.length);
+  const id = 'DBG-' + Utilities.getUuid().slice(0,8).toUpperCase();
+  const now = new Date();
+  const obj = {
+    'ID': id,
+    '日時': now,
+    '依頼ID': payload.requestId || '',
+    'Version': app.version || '',
+    'Build': app.build || '',
+    'アプリ更新日時': app.updatedAt || '',
+    'ログインユーザー': u.name || '',
+    '権限': u.role || '',
+    '店舗': u.store || '',
+    'キャリア': u.carrier || '',
+    '端末名': env.device || '',
+    'OS': env.os || '',
+    'ブラウザ': env.browser || '',
+    '画面サイズ': env.screen || '',
+    '言語': env.language || '',
+    'タイムゾーン': env.timezone || '',
+    '発生日時': occurred.time || '',
+    '表示ページ': occurred.page || '',
+    'URL': occurred.url || '',
+    'ネットワーク状態': occurred.network || '',
+    'オンライン状態': String(occurred.online),
+    'JSエラー': truncateForCell_(JSON.stringify(dbg.jsErrors || []), 45000),
+    'ConsoleError': truncateForCell_(JSON.stringify(dbg.consoleErrors || []), 45000),
+    'ConsoleWarning': truncateForCell_(JSON.stringify(dbg.consoleWarnings || []), 45000),
+    'ConsoleLog直近100件': truncateForCell_(JSON.stringify(dbg.consoleLog || []), 45000),
+    'STATE': truncateForCell_(JSON.stringify(state.state || {}), 45000),
+    'Filter': truncateForCell_(JSON.stringify(state.filter || {}), 45000),
+    'ログイン状態': String(state.loggedIn),
+    'スクリーンショット': '',
+    '画像URL': ''
+  };
+  const arr = new Array(lastCol).fill('');
+  Object.keys(obj).forEach(key => { const col = map[key]; if (col) arr[col - 1] = obj[key]; });
+  sh.getRange(sh.getLastRow() + 1, 1, 1, lastCol).setValues([arr]);
+  clearSheetObjectsCache(true);
+  return safeReturn_({ ok: true, message: 'デバッグ情報を保存しました。', id: id });
+}
+
+function nextSeqId_(sheetName, prefix) {
+  const rows = sheetObjects_(sheetName);
+  const nums = rows
+    .map(r => String(r['ID'] || ''))
+    .filter(id => id.indexOf(prefix + '-') === 0)
+    .map(id => parseInt(id.slice(prefix.length + 1), 10))
+    .filter(n => !isNaN(n));
+  const next = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+  return prefix + '-' + ('000' + next).slice(-3);
+}
+
+function getReleaseCenterSummary(token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const currentVersion = String(settings_()['現在バージョン'] || APP.VERSION);
+  const releases = sheetObjects_(APP.SHEETS.RELEASEDB).slice(-20).reverse();
+  const queue = sheetObjects_(APP.SHEETS.DEPLOYQUEUE).slice(-20).reverse();
+  return safeReturn_({ ok: true, currentVersion: currentVersion, releases: releases, queue: queue });
+}
+
+function saveReleasePrep(payload, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  payload = payload || {};
+  const nextVersion = String(payload.nextVersion || '').trim();
+  if (!nextVersion) throw new Error('次のバージョンを入力してください。');
+  const additions = String(payload.additions || '').trim();
+  const fixes = String(payload.fixes || '').trim();
+  const removals = String(payload.removals || '').trim();
+  const now = new Date();
+
+  const releaseNote = [
+    'v' + nextVersion + ' リリースノート',
+    '',
+    '■追加',
+    additions || '（なし）',
+    '',
+    '■修正',
+    fixes || '（なし）',
+    '',
+    '■削除',
+    removals || '（なし）'
+  ].join('\n');
+
+  const releaseId = nextSeqId_(APP.SHEETS.RELEASEDB, 'REL');
+  sheet_(APP.SHEETS.RELEASEDB).appendRow([releaseId, now, nextVersion, additions, fixes, removals, releaseNote, 'リリース準備完了', user.staffName]);
+
+  log_('RELEASE_PREP', nextVersion, user.staffName, 'リリース準備: ' + nextVersion);
+
+  const deployId = nextSeqId_(APP.SHEETS.DEPLOYQUEUE, 'DQ');
+  sheet_(APP.SHEETS.DEPLOYQUEUE).appendRow([deployId, now, nextVersion, releaseId, 'Deploy待ち', user.staffName]);
+
+  clearSheetObjectsCache(true);
+  return safeReturn_({
+    ok: true,
+    message: 'v' + nextVersion + ' をDeployQueueへ追加しました。',
+    releaseId: releaseId,
+    deployId: deployId,
+    releaseNote: releaseNote
+  });
 }
 
 function getUpdateCenterSummary(token) {
@@ -760,6 +1213,12 @@ function ensureSchema_() {
   specs[APP.SHEETS.BACKUP] = ['日時','種類','対象','実行者','内容'];
   specs[APP.SHEETS.UPDATE] = ['日時','更新前','更新後','実行者','内容','状態'];
   specs[APP.SHEETS.DEVLOG] = ['日時','レベル','場所','内容'];
+  specs[APP.SHEETS.DEVREQ] = APP.DEVREQ_HEADERS;
+  specs[APP.SHEETS.DEBUGLOG] = APP.DEBUGLOG_HEADERS;
+  specs[APP.SHEETS.RELEASEDB] = APP.RELEASEDB_HEADERS;
+  specs[APP.SHEETS.DEPLOYQUEUE] = APP.DEPLOYQUEUE_HEADERS;
+  specs[APP.SHEETS.AIQUEUE] = APP.AIQUEUE_HEADERS;
+  specs[APP.SHEETS.AIDEPLOYQUEUE] = APP.AIDEPLOYQUEUE_HEADERS;
   Object.keys(specs).forEach(name => {
     const sh = sheet_(name);
     const beforeCols = sh.getLastColumn();
@@ -829,47 +1288,80 @@ function migrateResults_() {
   if (sh.getLastRow() < 2) return;
   const map = headerMap_(sh);
   if (!map['対象日']) return;
-  const values = sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getValues();
-  const updates = [];
+  const numRows = sh.getLastRow() - 1;
+  const values = sh.getRange(2,1,numRows,sh.getLastColumn()).getValues();
+  const colUpdates = {};
+  ['年','月','年月'].forEach(key => {
+    if (map[key]) colUpdates[map[key]] = { changed: false, values: values.map(row => [row[map[key]-1]]) };
+  });
   values.forEach((row, i) => {
     const d = row[map['対象日']-1];
     if (!d) return;
     const date = new Date(d);
+    if (isNaN(date.getTime())) return;
     const year = fmt_(date, 'yyyy');
     const month = fmt_(date, 'MM');
     const ym = fmt_(date, 'yyyy-MM');
-    const r = i + 2;
-    if (map['年'] && !row[map['年']-1]) updates.push([r,map['年'],year]);
-    if (map['月'] && !row[map['月']-1]) updates.push([r,map['月'],month]);
-    if (map['年月'] && !row[map['年月']-1]) updates.push([r,map['年月'],ym]);
-    if (map['有効'] && row[map['有効']-1] === '') updates.push([r,map['有効'],true]);
+    if (map['年'] && !row[map['年']-1]) { colUpdates[map['年']].values[i][0] = year; colUpdates[map['年']].changed = true; }
+    if (map['月'] && !row[map['月']-1]) { colUpdates[map['月']].values[i][0] = month; colUpdates[map['月']].changed = true; }
+    if (map['年月'] && !row[map['年月']-1]) { colUpdates[map['年月']].values[i][0] = ym; colUpdates[map['年月']].changed = true; }
   });
-  updates.slice(0, 300).forEach(u => sh.getRange(u[0],u[1]).setValue(u[2]));
+  Object.keys(colUpdates).forEach(col => {
+    if (colUpdates[col].changed) sh.getRange(2, Number(col), numRows, 1).setValues(colUpdates[col].values);
+  });
 }
 
 function makeResultRow_(o) {
   const now = new Date();
-  return [
-    'R-' + Utilities.getUuid().slice(0,8).toUpperCase(), now, now, o.date,
-    fmt_(o.date,'yyyy'), fmt_(o.date,'MM'), fmt_(o.date,'yyyy-MM'),
-    o.store, o.staffName, o.carrier, o.item, Number(o.value || 0), o.memo || '', o.actor || '', o.op || 'CREATE', o.sourceId || '', true
-  ];
+  return {
+    'ID': 'R-' + Utilities.getUuid().slice(0,8).toUpperCase(),
+    '作成日時': now,
+    '更新日時': now,
+    '対象日': o.date,
+    '年': fmt_(o.date,'yyyy'),
+    '月': fmt_(o.date,'MM'),
+    '年月': fmt_(o.date,'yyyy-MM'),
+    '店舗': o.store,
+    'スタッフ': o.staffName,
+    'キャリア': o.carrier,
+    '項目': o.item,
+    '件数': Number(o.value || 0),
+    '備考': o.memo || '',
+    '入力者': o.actor || '',
+    '操作': o.op || 'CREATE',
+    '元ID': o.sourceId || '',
+    '有効': true
+  };
 }
 function validateResultPayload_(p) {
   ['date','store','staffName','carrier'].forEach(k => { if (!p[k]) throw new Error(k + ' が未入力です。'); });
   if (!p.results || !Object.keys(p.results).length) throw new Error('入力項目がありません。');
 }
 function matchFilter_(r, f) {
-  if (f.date && fmt_(new Date(r['対象日']), 'yyyy-MM-dd') !== f.date) return false;
-  if (f.year && String(r['年']) !== String(f.year)) return false;
-  if (f.month && String(r['年月']) !== String(f.month)) return false;
-  if (f.ym && String(r['年月']) !== String(f.ym)) return false;
+  const targetDate = new Date(r['対象日']);
+  const dateValid = !isNaN(targetDate.getTime());
+  if (f.date) {
+    if (!dateValid || fmt_(targetDate, 'yyyy-MM-dd') !== f.date) return false;
+  }
+  if (f.year) {
+    if (!dateValid || fmt_(targetDate, 'yyyy') !== String(f.year)) return false;
+  }
+  if (f.month) {
+    if (!dateValid || fmt_(targetDate, 'yyyy-MM') !== String(f.month)) return false;
+  }
+  if (f.ym) {
+    if (!dateValid || fmt_(targetDate, 'yyyy-MM') !== String(f.ym)) return false;
+  }
   if (f.store && String(r['店舗']) !== String(f.store)) return false;
   if (f.staff && String(r['スタッフ']) !== String(f.staff)) return false;
   if (f.carrier && String(r['キャリア']) !== String(f.carrier)) return false;
   return true;
 }
-function activeResults_() { return sheetObjects_(APP.SHEETS.RESULTS).filter(r => truthy_(r['有効'])); }
+function activeResults_() {
+  const all = sheetObjects_(APP.SHEETS.RESULTS);
+  const active = all.filter(r => truthy_(r['有効']) && String(r['有効']).trim() !== '');
+  return active;
+}
 function parseDate_(s) { const d = new Date(s); if (isNaN(d.getTime())) throw new Error('日付が不正です。'); return d; }
 function isPi_(item) { return ['PI','MNP'].includes(String(item).toUpperCase()); }
 function isLocked_(month) { const rows = sheetObjects_(APP.SHEETS.CLOSE).filter(r => String(r['対象月']) === String(month)); if (!rows.length) return false; return String(rows[rows.length-1]['状態']).toUpperCase() === 'LOCKED'; }
@@ -905,8 +1397,46 @@ function clearSheetObjectsCache(clearMasterCache) {
     try { CacheService.getScriptCache().remove('ARTS_MASTER_V1'); } catch (e) { /* ignore */ }
   }
 }
-function settings_() { const obj = {}; sheetObjects_(APP.SHEETS.SETTINGS).forEach(r => { if (r['設定名']) obj[String(r['設定名'])] = r['値']; }); return obj; }
-function setSetting_(key, value) { const sh = sheet_(APP.SHEETS.SETTINGS); const data = table_(APP.SHEETS.SETTINGS); const found = data.rows.find(r => String(r.obj['設定名']) === String(key)); if (found) sh.getRange(found.rowNumber, 2).setValue(value); else sh.appendRow([key, value]); clearSheetObjectsCache(true); }
+// 「設定」シート専用：1行目がタイトル、見出し（設定名/項目・値）が下の行にあるレイアウトのため、
+// 共通のtable_()/headerMap_()には頼らずA列/B列を直接読み書きする。
+var SETTINGS_HEADER_LABELS_ = ['設定名', '項目'];
+function settings_() {
+  const sh = sheet_(APP.SHEETS.SETTINGS);
+  const lastRow = sh.getLastRow();
+  const obj = {};
+  if (lastRow < 1) return obj;
+  const values = sh.getRange(1, 1, lastRow, 2).getValues();
+  let dataStarted = false;
+  values.forEach(row => {
+    const key = String(row[0] || '').trim();
+    if (!dataStarted) {
+      if (SETTINGS_HEADER_LABELS_.indexOf(key) !== -1) dataStarted = true;
+      return; // タイトル行・見出し行はスキップ
+    }
+    if (!key) return; // A列が空の行はスキップ
+    const val = row[1];
+    if (val !== '' && val !== null && val !== undefined) obj[key] = val;
+    else if (!(key in obj)) obj[key] = val; // 空値は既存の非空値を上書きしない
+  });
+  return obj;
+}
+function setSetting_(key, value) {
+  const sh = sheet_(APP.SHEETS.SETTINGS);
+  const lastRow = sh.getLastRow();
+  const keyStr = String(key).trim();
+  const matchRows = [];
+  if (lastRow >= 1) {
+    sh.getRange(1, 1, lastRow, 1).getValues().forEach((row, i) => {
+      if (String(row[0] || '').trim() === keyStr) matchRows.push(i + 1);
+    });
+  }
+  if (matchRows.length > 0) {
+    matchRows.forEach(rowNumber => sh.getRange(rowNumber, 2).setValue(value));
+  } else {
+    sh.appendRow([key, value]);
+  }
+  clearSheetObjectsCache(true);
+}
 function log_(action, target, actor, detail) { try { sheet_(APP.SHEETS.LOG).appendRow([new Date(), action, target, actor, detail]); } catch(e) {} }
 function fmt_(date, pattern) { return Utilities.formatDate(new Date(date), APP.TZ, pattern); }
 function truthy_(v) { return v === true || v === 'TRUE' || v === 'true' || v === 1 || v === '1' || v === '有効' || v === ''; }

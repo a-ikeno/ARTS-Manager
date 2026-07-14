@@ -132,6 +132,168 @@
         <div id="backupHistoryList" class="list"><p class="muted">読み込み中</p></div>
       </div>
       <div class="panel"><h3>管理</h3><label>PI目標</label><input id="piTarget" type="number"><button onclick="saveTarget()">目標保存</button><label>月締め対象</label><input id="lockMonth" type="month"><div class="actions"><button onclick="lockMonth()">月締め</button><button onclick="unlockMonth()">解除</button></div></div>
+      <div class="panel"><h3>開発</h3><div class="actions"><button onclick="showPage('devCenterPage')">🛠 開発センター</button><button onclick="showPage('aiAssistantPage')">🧠 AIアシスタント</button><button onclick="showPage('releaseCenterPage')">📦 リリースセンター</button></div></div>
+    </section>
+
+    <section id="devCenterPage" class="page">
+      <h2>🛠 開発センター</h2>
+      <div class="panel">
+        <h3>＋新規依頼</h3>
+        <label>種類</label>
+        <select id="devReqType">
+          <option value="バグ">バグ</option>
+          <option value="新機能">新機能</option>
+          <option value="UI改善">UI改善</option>
+          <option value="その他">その他</option>
+        </select>
+        <label>タイトル</label>
+        <input id="devReqTitle" type="text">
+        <label>内容</label>
+        <textarea id="devReqContent" rows="3"></textarea>
+        <label>優先度</label>
+        <select id="devReqPriority">
+          <option value="★★★★★">★★★★★</option>
+          <option value="★★★★☆">★★★★☆</option>
+          <option value="★★★☆☆">★★★☆☆</option>
+          <option value="★★☆☆☆">★★☆☆☆</option>
+          <option value="★☆☆☆☆">★☆☆☆☆</option>
+        </select>
+        <label>担当</label>
+        <select id="devReqAssignee">
+          <option value="Claude">Claude</option>
+          <option value="ChatGPT">ChatGPT</option>
+          <option value="保留">保留</option>
+        </select>
+        <button class="primary" onclick="saveDevRequest()">保存</button>
+      </div>
+      <div class="panel hidden" id="bugReportResultPanel">
+        <h3>🤖 Claude用プロンプト</h3>
+        <textarea id="bugReportPromptText" rows="12" readonly></textarea>
+        <button class="primary" onclick="copyBugReportPrompt()">📋 Claudeへコピー</button>
+      </div>
+      <div class="panel">
+        <h3>タスク一覧</h3>
+        <p id="devSummary" class="muted small"></p>
+        <div id="devRequestList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel">
+        <h3>🤖 AI Queue</h3>
+        <div id="aiQueueList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel">
+        <h3>🚀 Deploy Queue</h3>
+        <div id="aiDeployQueueList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel">
+        <h3>🚀 Mobile Release</h3>
+        <label>現在Version</label>
+        <p id="mobileCurrentVersion">-</p>
+        <label>次Version</label>
+        <p id="mobileNextVersion">-</p>
+        <p class="muted small">READY: <span id="mobileReadyCount">0</span>件 / DEPLOYING: <span id="mobileDeployingCount">0</span>件</p>
+        <div id="mobileReadyQueueList" class="list"><p class="muted">読み込み中</p></div>
+        <h4>直近Release履歴</h4>
+        <div id="mobileReleaseHistoryList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+    </section>
+
+    <section id="devDetailPage" class="page">
+      <h2>依頼詳細</h2>
+      <div class="panel" id="devDetailForm">
+        <label>ID</label>
+        <p id="devDetailId"></p>
+        <label>種類</label>
+        <p id="devDetailType"></p>
+        <label>タイトル</label>
+        <p id="devDetailTitle"></p>
+        <label>内容</label>
+        <p id="devDetailContent"></p>
+        <label>状態</label>
+        <select id="devDetailStatus">
+          <option value="未着手">未着手</option>
+          <option value="進行中">進行中</option>
+          <option value="完了">完了</option>
+        </select>
+        <label>担当</label>
+        <select id="devDetailAssignee">
+          <option value="Claude">Claude</option>
+          <option value="ChatGPT">ChatGPT</option>
+          <option value="保留">保留</option>
+        </select>
+        <label>優先度</label>
+        <select id="devDetailPriority">
+          <option value="★★★★★">★★★★★</option>
+          <option value="★★★★☆">★★★★☆</option>
+          <option value="★★★☆☆">★★★☆☆</option>
+          <option value="★★☆☆☆">★★☆☆☆</option>
+          <option value="★☆☆☆☆">★☆☆☆☆</option>
+        </select>
+        <label>作成日</label>
+        <p id="devDetailCreated"></p>
+        <label>更新日</label>
+        <p id="devDetailUpdated"></p>
+        <div class="actions">
+          <button class="primary" onclick="saveDevDetail()">保存</button>
+          <button onclick="copyDevRequestToClipboard()">📋 Claudeへコピー</button>
+          <button onclick="sendToAiQueue()">▶ 開始</button>
+          <button onclick="showPage('devCenterPage')">戻る</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="aiAssistantPage" class="page">
+      <h2>🧠 AIアシスタント</h2>
+      <div class="panel">
+        <h3>💬 AIへ相談</h3>
+        <textarea id="aiConsultInput" rows="3" placeholder="例：データ画面出ん"></textarea>
+        <button class="primary" onclick="generateAiConsultPrompt()">送信</button>
+      </div>
+      <div class="panel hidden" id="aiConsultResultPanel">
+        <h3>AI用プロンプト</h3>
+        <textarea id="aiConsultPromptText" rows="12" readonly></textarea>
+        <div class="actions">
+          <button onclick="copyAiConsultPrompt('ChatGPT')">🤖 ChatGPTへコピー</button>
+          <button onclick="copyAiConsultPrompt('Claude')">🤖 Claudeへコピー</button>
+        </div>
+      </div>
+      <div class="panel"><button onclick="showPage('adminPage')">戻る</button></div>
+    </section>
+
+    <section id="releaseCenterPage" class="page">
+      <h2>📦 リリースセンター β</h2>
+      <div class="panel">
+        <h3>① Version管理</h3>
+        <label>現在</label>
+        <p id="releaseCurrentVersion">-</p>
+        <label>次のバージョン</label>
+        <input id="releaseNextVersion" type="text" placeholder="例：1.2.6">
+      </div>
+      <div class="panel">
+        <h3>② 更新内容</h3>
+        <label>追加</label>
+        <textarea id="releaseAdditions" rows="2"></textarea>
+        <label>修正</label>
+        <textarea id="releaseFixes" rows="2"></textarea>
+        <label>削除</label>
+        <textarea id="releaseRemovals" rows="2"></textarea>
+      </div>
+      <div class="panel">
+        <button class="primary" onclick="saveReleasePrep()">📦 リリース準備</button>
+      </div>
+      <div class="panel hidden" id="releaseNotePanel">
+        <h3>③ Release Note（自動生成）</h3>
+        <textarea id="releaseNotePreview" rows="8" readonly></textarea>
+      </div>
+      <div class="panel">
+        <h3>④ Deploy Queue</h3>
+        <p class="muted small">待機中 → リリース準備完了 → Deploy待ち</p>
+        <div id="deployQueueList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel">
+        <h3>リリース履歴</h3>
+        <div id="releaseHistoryList" class="list"><p class="muted">読み込み中</p></div>
+      </div>
+      <div class="panel"><button onclick="showPage('adminPage')">戻る</button></div>
     </section>
 
     <nav class="tabbar">

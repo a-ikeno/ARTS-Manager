@@ -2,6 +2,33 @@
 let STATE = { token: '', user: null, master: null, dashboard: null, results: [], settings: {} };
 const $ = id => document.getElementById(id);
 
+let DEBUG_LOG_BUFFER = [];
+let DEBUG_ERROR_BUFFER = [];
+(function initDebugCapture() {
+  const origLog = console.log, origWarn = console.warn, origError = console.error;
+  function toText(args) {
+    return Array.from(args).map(a => {
+      try { return typeof a === 'string' ? a : JSON.stringify(a); } catch (e) { return String(a); }
+    }).join(' ');
+  }
+  function pushLog(level, args) {
+    try {
+      DEBUG_LOG_BUFFER.push({ level: level, time: new Date().toISOString(), text: toText(args) });
+      if (DEBUG_LOG_BUFFER.length > 100) DEBUG_LOG_BUFFER.shift();
+    } catch (e) {}
+  }
+  console.log = function (...args) { pushLog('log', args); origLog.apply(console, args); };
+  console.warn = function (...args) { pushLog('warn', args); origWarn.apply(console, args); };
+  console.error = function (...args) {
+    pushLog('error', args);
+    try { DEBUG_ERROR_BUFFER.push({ time: new Date().toISOString(), text: toText(args) }); } catch (e) {}
+    origError.apply(console, args);
+  };
+  window.addEventListener('error', function (e) {
+    try { DEBUG_ERROR_BUFFER.push({ time: new Date().toISOString(), text: (e.message || '') + ' @ ' + (e.filename || '') + ':' + (e.lineno || '') }); } catch (err) {}
+  });
+})();
+
 function server(fn, ...args) {
   return new Promise((resolve, reject) => {
     const runner = google.script.run
@@ -32,6 +59,18 @@ function server(fn, ...args) {
       case 'updateSetting': return runner.updateSetting(...args);
       case 'lockMonth': return runner.lockMonth(...args);
       case 'unlockMonth': return runner.unlockMonth(...args);
+      case 'getDevRequests': return runner.getDevRequests(...args);
+      case 'saveDevRequest': return runner.saveDevRequest(...args);
+      case 'updateDevRequest': return runner.updateDevRequest(...args);
+      case 'saveDebugLog': return runner.saveDebugLog(...args);
+      case 'getReleaseCenterSummary': return runner.getReleaseCenterSummary(...args);
+      case 'saveReleasePrep': return runner.saveReleasePrep(...args);
+      case 'getAiQueue': return runner.getAiQueue(...args);
+      case 'saveAiQueueItem': return runner.saveAiQueueItem(...args);
+      case 'getDeployQueue': return runner.getDeployQueue(...args);
+      case 'saveDeployQueueItem': return runner.saveDeployQueueItem(...args);
+      case 'getMobileReleaseSummary': return runner.getMobileReleaseSummary(...args);
+      case 'requestDeploy': return runner.requestDeploy(...args);
       default: return reject(new Error('Unsupported function: ' + fn));
     }
   });
@@ -151,6 +190,8 @@ async function login() {
     fillSelects();
     renderItems();
     await refreshUI();
+    await loadTodayEntries();
+    await reloadDashboard();
     toast('ログインしました');
   } catch (e) {
     toast(e.message || String(e));
@@ -363,12 +404,22 @@ async function refreshUI() {
 }
 async function loadTodayEntries() {
   const selectedDate = $('date') ? $('date').value : '';
+  console.log('[DEBUG_TEMP loadTodayEntries] selectedDate =', selectedDate);
   if (!STATE.token || !selectedDate) {
     renderTodayEntries([]);
     return;
   }
   try {
     const rows = await server('listResults', { date: selectedDate }, STATE.token);
+    console.log('[DEBUG_TEMP loadTodayEntries] rows.length =', Array.isArray(rows) ? rows.length : rows);
+    console.log('[DEBUG_TEMP loadTodayEntries] rows first5 =', (Array.isArray(rows) ? rows.slice(0, 5) : []).map(r => ({ date: r.date, staff: r.staff, store: r.store, carrier: r.carrier })));
+    console.log('[DEBUG_TEMP loadTodayEntries] renderTodayEntries count =', Array.isArray(rows) ? rows.length : 0);
+    console.group('loadTodayEntries');
+    console.log('selectedDate', selectedDate);
+    console.log('rows', rows);
+    console.log('rows.length', Array.isArray(rows) ? rows.length : 'not array');
+    console.log('rows first5', Array.isArray(rows) ? rows.slice(0,5) : rows);
+    console.groupEnd();
     renderTodayEntries(Array.isArray(rows) ? rows : []);
   } catch (e) {
     renderTodayEntries([]);
@@ -396,11 +447,16 @@ function renderTodayEntries(rows) {
     console.log('[renderTodayEntries] row date', { index: i, rawDate: rawDate, normalizedDate: normalizedDate });
   });
 
-  const visibleRows = (safeRows || []).filter(r => {
-    const d = formatYMD(r.date || r['日時'] || r['日付'] || r);
-    return !targetDate || d === targetDate;
-  });
+  const visibleRows = (safeRows || []).filter(r => Number(r.value) > 0);
   console.log('[renderTodayEntries] visible rows =', visibleRows.length);
+  console.log('[DEBUG_TEMP renderTodayEntries] visibleRows.length =', visibleRows.length);
+  console.log('[DEBUG_TEMP renderTodayEntries] visibleRows first5 =', visibleRows.slice(0, 5).map(r => ({ date: r.date, staff: r.staff, store: r.store, carrier: r.carrier })));
+  console.group('renderTodayEntries');
+  console.log('received rows', rows);
+  console.log('safeRows', safeRows);
+  console.log('visibleRows', visibleRows);
+  console.log('todayInputList', $('todayInputList'));
+  console.groupEnd();
   el.innerHTML = visibleRows.slice(0, 20).map(rowHtml).join('') || '<p class="muted">まだ入力がありません</p>';
 }
 function cssEscape(v) {
@@ -420,18 +476,21 @@ async function saveResult() {
     setSaving(true);
     const r = await server('saveResult', payload, STATE.token);
     console.log('[saveResult] response', { ok: !!r, dashboardType: r && typeof r.dashboard, resultsType: Array.isArray(r && r.results) ? 'array' : typeof (r && r.results), dashboardIsNull: r && r.dashboard === null });
-    STATE.dashboard = r.dashboard;
-    if (Array.isArray(r.results)) {
+    if (r && r.dashboard && typeof r.dashboard === 'object') STATE.dashboard = r.dashboard;
+    if (r && Array.isArray(r.results)) {
       STATE.results = r.results;
     } else {
-      STATE.results = await server('listResults', currentFilter(), STATE.token);
+      const fallbackResults = await server('listResults', currentFilter(), STATE.token);
+      STATE.results = Array.isArray(fallbackResults) ? fallbackResults : [];
     }
     console.log('[saveResult] after assign', { dashboard: STATE.dashboard, resultsLength: STATE.results.length });
     try { localStorage.setItem('ARTS_RESULTS_' + (payload.date || ''), JSON.stringify(STATE.results)); } catch (e) {}
+    toast((r && r.message) || '保存しました');
     await refreshUI();
+    await loadTodayEntries();
+    await reloadDashboard();
     clearInputValues(false);
     $('memo').value = '';
-    toast((r && r.message) || '保存しました');
   } catch (e) { toast(e.message || String(e)); }
   finally { setSaving(false); }
 }
@@ -441,10 +500,11 @@ async function reloadDashboard() {
     const f = currentFilter();
     const d = await server('getDashboard', f, STATE.token);
     console.log('[reloadDashboard] response', { dashboardType: d && typeof d, dashboardIsNull: d === null });
-    STATE.dashboard = d;
-    STATE.results = await server('listResults', f, STATE.token);
+    if (d && typeof d === 'object') STATE.dashboard = d;
+    const results = await server('listResults', f, STATE.token);
+    STATE.results = Array.isArray(results) ? results : [];
     console.log('[reloadDashboard] after assign', { dashboard: STATE.dashboard, resultsLength: STATE.results.length });
-    renderDashboard(d);
+    renderDashboard(STATE.dashboard);
     renderResults(STATE.results);
   } catch (e) { toast(e.message || String(e)); }
 }
@@ -452,7 +512,7 @@ async function reloadDashboard() {
 function currentFilter() { return { month: $('filterMonth').value, store: $('filterStore').value, staff: $('filterStaff').value, carrier: $('filterCarrier').value }; }
 
 function renderDashboard(d) {
-  if (!d || !d.summary) return;
+  if (!d || !d.summary) { return; }
   const s = d.summary;
   const recentRows = Array.isArray(d.recent) ? d.recent : [];
   $('homePi').textContent = s.pi || 0;
@@ -476,12 +536,12 @@ function renderDashboard(d) {
 }
 
 function renderResults(rows) {
-  $('resultList').innerHTML = (rows || []).map(r => `<div class="row"><div><b>${esc(formatYMD(r.date))} ${esc(r.store)}</b><br><small>${esc(r.staff)} / ${esc(r.carrier)} / ${esc(r.item)} / ${esc(r.memo || '')}</small></div><div><b>${r.value}</b><br><button onclick="editResult('${r.id}',${r.value})">修正</button><button class="danger" onclick="delResult('${r.id}')">削除</button></div></div>`).join('') || '<p class="muted">データなし</p>';
+  $('resultList').innerHTML = (rows || []).filter(r => Number(r.value) > 0).map(r => `<div class="row"><div><b>${esc(formatYMD(r.date))} ${esc(r.store)}</b><br><small>${esc(r.staff)} / ${esc(r.carrier)} / ${esc(r.item)} / ${esc(r.memo || '')}</small></div><div><b>${r.value}</b><br><button onclick="editResult('${r.id}',${r.value})">修正</button><button class="danger" onclick="delResult('${r.id}')">削除</button></div></div>`).join('') || '<p class="muted">データなし</p>';
 }
 function rowHtml(r) { return `<div class="row"><div><b>${esc(formatYMD(r.date))} ${esc(r.store)}</b><br><small>${esc(r.staff)} / ${esc(r.carrier)} / ${esc(r.item)}</small></div><b>${r.value}</b></div>`; }
 
-async function editResult(id, val) { const v = prompt('件数を入力', val); if (v === null) return; const memo = prompt('備考（空欄可）', ''); try { const r = await server('updateResult', { id, value: Number(v), memo: memo || '' }, STATE.token); STATE.dashboard = r.dashboard; STATE.results = r.results || []; await refreshUI(); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
-async function delResult(id) { if (!confirm('削除しますか？')) return; try { const r = await server('deleteResult', id, STATE.token); STATE.dashboard = r.dashboard; STATE.results = r.results || []; await refreshUI(); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function editResult(id, val) { const v = prompt('件数を入力', val); if (v === null) return; const memo = prompt('備考（空欄可）', ''); try { const r = await server('updateResult', { id, value: Number(v), memo: memo || '' }, STATE.token); if (r && r.dashboard && typeof r.dashboard === 'object') STATE.dashboard = r.dashboard; STATE.results = (r && r.results) || []; await refreshUI(); toast(r && r.message); } catch (e) { toast(e.message || String(e)); } }
+async function delResult(id) { if (!confirm('削除しますか？')) return; try { const r = await server('deleteResult', id, STATE.token); if (r && r.dashboard && typeof r.dashboard === 'object') STATE.dashboard = r.dashboard; STATE.results = (r && r.results) || []; await refreshUI(); toast(r && r.message); } catch (e) { toast(e.message || String(e)); } }
 async function makeReport(type) { try { const r = await server('generateReport', type, currentFilter(), STATE.token); $('reportText').value = r.text; } catch (e) { toast(e.message || String(e)); } }
 async function makeAi() { try { const r = await server('getAiAnalysis', currentFilter(), STATE.token); $('reportText').value = r.meetingText; } catch (e) { toast(e.message || String(e)); } }
 function copyReport() { navigator.clipboard.writeText($('reportText').value || ''); toast('コピーしました'); }
@@ -495,6 +555,7 @@ function renderUpdate(u) {
     <small>${esc(u.copyPasteReduction || '')}</small>
     ${notes ? `<div class="release-notes">${notes}</div>` : ''}
     <small>Script ID: ${esc(ready.scriptId || '未取得')}</small><br>
+    <small>マニフェストURL: ${ready.hasManifestUrl ? '設定済み' : '未設定'}</small><br>
     <small>${esc(ready.message || '')}</small>
   `;
   if ($('manifestUrl')) $('manifestUrl').value = u.manifestUrl || '';
@@ -543,7 +604,7 @@ async function runUpdate() {
   } catch (e) { toast(e.message || String(e)); }
 }
 async function saveManifestUrl() { try { const r = await server('saveUpdateManifestUrl', $('manifestUrl').value, STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.message) || 'URL保存しました'); await refreshUpdateCenter(); } catch (e) { toast(e.message || String(e)); } }
-async function checkCodeUpdate() { try { const r = await server('checkCodeUpdateReadiness', STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.readiness && r.readiness.message) || '確認しました'); } catch (e) { toast(e.message || String(e)); } }
+async function checkCodeUpdate() { try { const r = await server('checkCodeUpdateReadiness', STATE.token); console.log("checkCodeUpdate response", r); if (r && r.update) renderUpdate(r.update); toast((r && r.readiness && r.readiness.message) || '確認しました'); } catch (e) { toast(e.message || String(e)); } }
 async function runCodeUpdate() { try { if (!confirm('コード更新を実行します。事前バックアップ後に続行しますか？')) return; const r = await server('runCodeUpdateFromManifest', STATE.token); if (r && r.update) renderUpdate(r.update); toast((r && r.message) || 'コード更新しました'); await refreshUpdateCenter(); } catch (e) { toast(e.message || String(e)); showLoginDebug({ codeUpdateError: e.message || String(e) }); } }
 async function backup() {
   try {
@@ -554,8 +615,8 @@ async function backup() {
   } catch (e) { toast(e.message || String(e)); }
 }
 async function saveTarget() { try { await server('updateSetting', 'PI目標', $('piTarget').value, STATE.token); toast('保存しました'); reloadDashboard(); } catch (e) { toast(e.message || String(e)); } }
-async function lockMonth() { try { const r = await server('lockMonth', $('lockMonth').value, STATE.token); renderDashboard(r.dashboard); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
-async function unlockMonth() { try { const r = await server('unlockMonth', $('lockMonth').value, STATE.token); renderDashboard(r.dashboard); toast(r.message); } catch (e) { toast(e.message || String(e)); } }
+async function lockMonth() { try { const r = await server('lockMonth', $('lockMonth').value, STATE.token); if (r && r.dashboard && typeof r.dashboard === 'object') renderDashboard(r.dashboard); toast(r && r.message); } catch (e) { toast(e.message || String(e)); } }
+async function unlockMonth() { try { const r = await server('unlockMonth', $('lockMonth').value, STATE.token); if (r && r.dashboard && typeof r.dashboard === 'object') renderDashboard(r.dashboard); toast(r && r.message); } catch (e) { toast(e.message || String(e)); } }
 async function showPage(id) {
   console.log('[showPage]', { id, hasDashboard: !!STATE.dashboard, dashboardIsNull: STATE.dashboard === null, resultsLength: STATE.results.length });
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -563,6 +624,373 @@ async function showPage(id) {
   if (id === 'inputPage' && STATE.token) {
     await loadTodayEntries();
   }
+  if (id === 'devCenterPage' && STATE.token) {
+    await loadDevCenter();
+  }
+  if (id === 'releaseCenterPage' && STATE.token) {
+    await loadReleaseCenter();
+  }
+  if (id === 'adminPage' && STATE.token) {
+    await refreshUpdateCenter();
+  }
+}
+let DEV_REQUESTS = [];
+async function loadDevCenter() {
+  try {
+    const rows = await server('getDevRequests', STATE.token);
+    DEV_REQUESTS = Array.isArray(rows) ? rows : [];
+    renderDevRequests(DEV_REQUESTS);
+  } catch (e) {
+    DEV_REQUESTS = [];
+    renderDevRequests([]);
+    toast(e.message || String(e));
+  }
+  try {
+    const queue = await server('getAiQueue', STATE.token);
+    renderAiQueue(Array.isArray(queue) ? queue : []);
+  } catch (e) {
+    renderAiQueue([]);
+  }
+  try {
+    const deployQueue = await server('getDeployQueue', STATE.token);
+    renderAiDeployQueue(Array.isArray(deployQueue) ? deployQueue : []);
+  } catch (e) {
+    renderAiDeployQueue([]);
+  }
+  try {
+    const mobile = await server('getMobileReleaseSummary', STATE.token);
+    renderMobileRelease(mobile);
+  } catch (e) {
+    renderMobileRelease({});
+  }
+}
+function renderMobileRelease(data) {
+  data = data || {};
+  if ($('mobileCurrentVersion')) $('mobileCurrentVersion').textContent = data.currentVersion || '-';
+  if ($('mobileNextVersion')) $('mobileNextVersion').textContent = data.nextVersion || '-';
+  if ($('mobileReadyCount')) $('mobileReadyCount').textContent = data.readyCount || 0;
+  if ($('mobileDeployingCount')) $('mobileDeployingCount').textContent = data.deployingCount || 0;
+  const readyList = data.readyQueue || [];
+  if ($('mobileReadyQueueList')) {
+    $('mobileReadyQueueList').innerHTML = readyList.map(r => `<div class="row"><div><b>${esc(r['ID'])}</b> / ${esc(r['TaskID'])}<br><small>Build${esc(r['BuildVersion'])} / 担当${esc(r['担当AI'])} / Build完了${esc(formatYMD(r['Build完了日時']) || r['Build完了日時'])}</small></div><button onclick="requestDeployQueueItem('${escAttr(r['ID'])}')">🚀 Deploy開始</button></div>`).join('') || '<p class="muted">READYはありません</p>';
+  }
+  const releases = data.recentReleases || [];
+  if ($('mobileReleaseHistoryList')) {
+    $('mobileReleaseHistoryList').innerHTML = releases.map(rel => `<div class="row"><div><b>v${esc(rel['バージョン'])}</b><br><small>${esc(rel['状態'])} / ${esc(rel['作成者'])}</small></div></div>`).join('') || '<p class="muted">履歴はありません</p>';
+  }
+}
+async function requestDeployQueueItem(id) {
+  try {
+    const r = await server('requestDeploy', { id: id }, STATE.token);
+    toast((r && r.message) || 'Deploy開始要求を登録しました');
+    await loadDevCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+function renderAiQueue(rows) {
+  const el = $('aiQueueList');
+  if (!el) return;
+  const list = rows || [];
+  el.innerHTML = list.map(r => `<div class="row"><div><b>${esc(r['ID'])}</b> / ${esc(r['TaskID'])}<br><small>担当${esc(r['担当AI'])} / 優先度${esc(r['優先度'])} / 登録${esc(formatYMD(r['作成日時']) || r['作成日時'])}</small></div><div><b>${esc(r['状態'])}</b><br><button onclick="markBuildComplete('${escAttr(r['ID'])}')">✅ Build完了</button></div></div>`).join('') || '<p class="muted">Queueは空です</p>';
+}
+function renderAiDeployQueue(rows) {
+  const el = $('aiDeployQueueList');
+  if (!el) return;
+  const list = rows || [];
+  el.innerHTML = list.map(r => `<div class="row"><div><b>${esc(r['ID'])}</b> / ${esc(r['TaskID'])}<br><small>Build${esc(r['BuildVersion'])} / 担当${esc(r['担当AI'])} / Build完了${esc(formatYMD(r['Build完了日時']) || r['Build完了日時'])}</small></div><b>${esc(r['状態'])}</b></div>`).join('') || '<p class="muted">Queueは空です</p>';
+}
+async function sendToAiQueue() {
+  try {
+    const id = $('devDetailForm').dataset.id;
+    if (!id) { toast('対象タスクが見つかりません'); return; }
+    const r = await server('saveAiQueueItem', { taskId: id }, STATE.token);
+    toast((r && r.message) || 'Claude Queueへ登録しました');
+    await loadDevCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+async function markBuildComplete(aiQueueId) {
+  try {
+    const r = await server('saveDeployQueueItem', { aiQueueId: aiQueueId }, STATE.token);
+    toast((r && r.message) || 'Deploy Queueへ登録しました');
+    await loadDevCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+function renderDevRequests(rows) {
+  const el = $('devRequestList');
+  if (!el) return;
+  const list = rows || [];
+  const countOf = st => list.filter(r => r['状態'] === st).length;
+  if ($('devSummary')) {
+    $('devSummary').textContent = `未着手 ${countOf('未着手')}件 / 進行中 ${countOf('進行中')}件 / 完了 ${countOf('完了')}件`;
+  }
+  el.innerHTML = list.map(r => `<div class="row" onclick="showDevDetail('${escAttr(r['ID'])}')"><div><b>${esc(r['ID'])} ${esc(r['タイトル'])}</b><br><small>優先度${esc(r['優先度'])} / 担当${esc(r['担当'])} / 更新日${esc(formatYMD(r['更新日']) || r['更新日'])}</small></div><b>${esc(r['状態'])}</b></div>`).join('') || '<p class="muted">タスクがありません</p>';
+}
+function collectDebugInfo() {
+  const activePage = document.querySelector('.page.active');
+  let stateSnapshot = {};
+  try { stateSnapshot = JSON.parse(JSON.stringify(STATE)); } catch (e) { stateSnapshot = { error: 'STATE not serializable' }; }
+  return {
+    app: {
+      version: $('versionBadge') ? $('versionBadge').textContent : '',
+      build: '',
+      updatedAt: ''
+    },
+    user: {
+      name: (STATE.user && STATE.user.staffName) || '',
+      role: (STATE.user && (STATE.user.isAdmin ? 'ADMIN' : 'STAFF')) || '',
+      store: (STATE.user && STATE.user.store) || '',
+      carrier: $('carrier') ? $('carrier').value : ''
+    },
+    env: {
+      device: navigator.platform || '',
+      os: navigator.userAgent || '',
+      browser: navigator.userAgent || '',
+      screen: (window.innerWidth || 0) + 'x' + (window.innerHeight || 0),
+      language: navigator.language || '',
+      timezone: (Intl.DateTimeFormat().resolvedOptions().timeZone) || ''
+    },
+    occurred: {
+      time: new Date().toISOString(),
+      page: activePage ? activePage.id : '',
+      url: window.location.href,
+      network: (navigator.connection && navigator.connection.effectiveType) || 'unknown',
+      online: navigator.onLine
+    },
+    debug: {
+      jsErrors: DEBUG_ERROR_BUFFER.slice(-20),
+      consoleErrors: DEBUG_LOG_BUFFER.filter(l => l.level === 'error').slice(-20),
+      consoleWarnings: DEBUG_LOG_BUFFER.filter(l => l.level === 'warn').slice(-20),
+      consoleLog: DEBUG_LOG_BUFFER.slice(-100)
+    },
+    state: {
+      state: stateSnapshot,
+      filter: (typeof currentFilter === 'function') ? currentFilter() : {},
+      version: $('versionBadge') ? $('versionBadge').textContent : '',
+      loggedIn: !!STATE.token
+    }
+  };
+}
+const PAGE_LABELS = { homePage: 'ホーム', inputPage: '入力', dashPage: '集計', dataPage: 'データ', reportPage: '報告', adminPage: '設定', devCenterPage: '開発センター', devDetailPage: '開発依頼詳細' };
+function buildAutoAnalysis(debugInfo, devReqPayload) {
+  const pageLabel = PAGE_LABELS[debugInfo.occurred.page] || debugInfo.occurred.page || '不明';
+  const errors = (debugInfo.debug.jsErrors || []).concat(debugInfo.debug.consoleErrors || []);
+  const summary = devReqPayload.title || (pageLabel + 'で問題が発生');
+  const steps = 'ログイン → ' + pageLabel + 'を表示';
+  const expected = devReqPayload.content || '（正常に動作すること）';
+  const actual = errors.length ? errors.slice(-3).map(e => e.text).join(' / ') : '（コンソールエラーは検出されていません。タイトル・内容欄を参照）';
+  const priority = errors.length ? '★★★★☆' : (devReqPayload.priority || '★★★☆☆');
+  return { summary: summary, steps: steps, expected: expected, actual: actual, page: pageLabel, priority: priority };
+}
+function buildClaudePrompt(id, devReqPayload, debugInfo, auto) {
+  const consoleSummary = (debugInfo.debug.consoleLog || []).slice(-10).map(l => '[' + l.level + '] ' + l.text).join('\n') || '（記録なし）';
+  return [
+    id,
+    '',
+    '概要',
+    auto.summary,
+    '',
+    '再現',
+    auto.steps,
+    '',
+    '期待',
+    auto.expected,
+    '',
+    '実際',
+    auto.actual,
+    '',
+    'Version',
+    debugInfo.app.version || '',
+    '',
+    '端末',
+    debugInfo.env.device || '',
+    '',
+    'ユーザー',
+    debugInfo.user.name || '',
+    '',
+    'ページ',
+    auto.page,
+    '',
+    'Console（直近10件）',
+    consoleSummary,
+    '',
+    'STATE',
+    'サーバーのDebugLogDBに保存済み（依頼ID: ' + id + '）'
+  ].join('\n');
+}
+function copyBugReportPrompt() {
+  const text = $('bugReportPromptText') ? $('bugReportPromptText').value : '';
+  if (!text) { toast('コピーする内容がありません'); return; }
+  navigator.clipboard.writeText(text);
+  toast('コピーしました');
+}
+function buildAutoAnalysisFromText(freeText, debugInfo) {
+  const pageLabel = PAGE_LABELS[debugInfo.occurred.page] || debugInfo.occurred.page || '不明';
+  const errors = (debugInfo.debug.jsErrors || []).concat(debugInfo.debug.consoleErrors || []);
+  const summary = freeText || (pageLabel + 'で問題が発生');
+  const steps = 'ログイン → ' + pageLabel + 'を表示';
+  const expected = '（期待する動作の詳細は「実際」の内容と照らして判断してください）';
+  const actualParts = [freeText];
+  if (errors.length) actualParts.push('コンソールエラー: ' + errors.slice(-3).map(e => e.text).join(' / '));
+  const actual = actualParts.join(' / ');
+  const priority = errors.length ? '★★★★☆' : '★★★☆☆';
+  return { summary: summary, steps: steps, expected: expected, actual: actual, page: pageLabel, priority: priority };
+}
+function buildConsultPrompt(freeText, debugInfo, auto) {
+  const consoleSummary = (debugInfo.debug.consoleLog || []).slice(-10).map(l => '[' + l.level + '] ' + l.text).join('\n') || '（記録なし）';
+  return [
+    '【AIアシスタント相談】',
+    '',
+    '概要',
+    auto.summary,
+    '',
+    '再現',
+    auto.steps,
+    '',
+    '期待',
+    auto.expected,
+    '',
+    '実際',
+    auto.actual,
+    '',
+    'Version',
+    debugInfo.app.version || '',
+    '',
+    '端末',
+    debugInfo.env.device || '',
+    '',
+    'ページ',
+    auto.page,
+    '',
+    'Console（直近10件）',
+    consoleSummary,
+    '',
+    'STATE',
+    'ブラウザ内で生成（サーバー未保存）',
+    '',
+    'スクショ',
+    '（未対応：自動取得できません）'
+  ].join('\n');
+}
+function generateAiConsultPrompt() {
+  const freeText = $('aiConsultInput') ? $('aiConsultInput').value.trim() : '';
+  if (!freeText) { toast('相談内容を入力してください'); return; }
+  const debugInfo = collectDebugInfo();
+  const auto = buildAutoAnalysisFromText(freeText, debugInfo);
+  const prompt = buildConsultPrompt(freeText, debugInfo, auto);
+  if ($('aiConsultPromptText')) $('aiConsultPromptText').value = prompt;
+  if ($('aiConsultResultPanel')) $('aiConsultResultPanel').classList.remove('hidden');
+}
+function copyAiConsultPrompt(target) {
+  const text = $('aiConsultPromptText') ? $('aiConsultPromptText').value : '';
+  if (!text) { toast('コピーする内容がありません'); return; }
+  navigator.clipboard.writeText(text);
+  toast((target || '') + 'へコピーしました');
+}
+async function loadReleaseCenter() {
+  try {
+    const r = await server('getReleaseCenterSummary', STATE.token);
+    renderReleaseCenter(r);
+  } catch (e) { toast(e.message || String(e)); }
+}
+function renderReleaseCenter(r) {
+  if (!r) return;
+  if ($('releaseCurrentVersion')) $('releaseCurrentVersion').textContent = r.currentVersion || '';
+  if ($('deployQueueList')) {
+    $('deployQueueList').innerHTML = (r.queue || []).map(q => `<div class="row"><div><b>v${esc(q['バージョン'])}</b><br><small>${esc(q['状態'])} / ${esc(q['リクエスト者'])}</small></div></div>`).join('') || '<p class="muted">Queueは空です</p>';
+  }
+  if ($('releaseHistoryList')) {
+    $('releaseHistoryList').innerHTML = (r.releases || []).map(rel => `<div class="row"><div><b>v${esc(rel['バージョン'])}</b><br><small>${esc(rel['状態'])} / ${esc(rel['作成者'])}</small></div></div>`).join('') || '<p class="muted">履歴はありません</p>';
+  }
+}
+async function saveReleasePrep() {
+  try {
+    const payload = {
+      nextVersion: $('releaseNextVersion').value,
+      additions: $('releaseAdditions').value,
+      fixes: $('releaseFixes').value,
+      removals: $('releaseRemovals').value
+    };
+    if (!payload.nextVersion) { toast('次のバージョンを入力してください'); return; }
+    const r = await server('saveReleasePrep', payload, STATE.token);
+    toast((r && r.message) || '登録しました');
+    if ($('releaseNotePreview')) $('releaseNotePreview').value = (r && r.releaseNote) || '';
+    if ($('releaseNotePanel')) $('releaseNotePanel').classList.remove('hidden');
+    await loadReleaseCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+async function saveDevRequest() {
+  try {
+    const payload = {
+      type: $('devReqType').value,
+      title: $('devReqTitle').value,
+      content: $('devReqContent').value,
+      priority: $('devReqPriority').value,
+      assignee: $('devReqAssignee').value
+    };
+    if (!payload.title) { toast('タイトルを入力してください'); return; }
+    const r = await server('saveDevRequest', payload, STATE.token);
+    toast((r && r.message) || '登録しました');
+    if (payload.type === 'バグ' && r && r.id) {
+      try {
+        const debugInfo = collectDebugInfo();
+        debugInfo.requestId = r.id;
+        await server('saveDebugLog', debugInfo, STATE.token);
+        const auto = buildAutoAnalysis(debugInfo, payload);
+        const prompt = buildClaudePrompt(r.id, payload, debugInfo, auto);
+        if ($('bugReportPromptText')) $('bugReportPromptText').value = prompt;
+        if ($('bugReportResultPanel')) $('bugReportResultPanel').classList.remove('hidden');
+      } catch (e) { /* デバッグ情報の収集失敗はバグ報告自体の成功を妨げない */ }
+    } else if ($('bugReportResultPanel')) {
+      $('bugReportResultPanel').classList.add('hidden');
+    }
+    $('devReqTitle').value = '';
+    $('devReqContent').value = '';
+    await loadDevCenter();
+  } catch (e) { toast(e.message || String(e)); }
+}
+function showDevDetail(id) {
+  const r = DEV_REQUESTS.find(x => String(x['ID']) === String(id));
+  if (!r) { toast('データが見つかりません'); return; }
+  $('devDetailId').textContent = r['ID'];
+  $('devDetailType').textContent = r['種類'];
+  $('devDetailTitle').textContent = r['タイトル'];
+  $('devDetailContent').textContent = r['内容'] || '';
+  $('devDetailCreated').textContent = formatYMD(r['日時']) || r['日時'] || '';
+  $('devDetailUpdated').textContent = formatYMD(r['更新日']) || r['更新日'] || '';
+  $('devDetailStatus').value = r['状態'] || '未着手';
+  $('devDetailAssignee').value = r['担当'] || '保留';
+  $('devDetailPriority').value = r['優先度'] || '★★★☆☆';
+  $('devDetailForm').dataset.id = r['ID'];
+  showPage('devDetailPage');
+}
+async function saveDevDetail() {
+  try {
+    const id = $('devDetailForm').dataset.id;
+    const payload = { id, status: $('devDetailStatus').value, assignee: $('devDetailAssignee').value, priority: $('devDetailPriority').value };
+    const r = await server('updateDevRequest', payload, STATE.token);
+    toast((r && r.message) || '更新しました');
+    await loadDevCenter();
+    showPage('devCenterPage');
+  } catch (e) { toast(e.message || String(e)); }
+}
+function copyDevRequestToClipboard() {
+  const id = $('devDetailForm').dataset.id;
+  const r = DEV_REQUESTS.find(x => String(x['ID']) === String(id));
+  if (!r) { toast('データが見つかりません'); return; }
+  const text = [
+    '========================',
+    'ID: ' + (r['ID'] || ''),
+    '種類: ' + (r['種類'] || ''),
+    'タイトル: ' + (r['タイトル'] || ''),
+    '概要: ' + (r['内容'] || ''),
+    '再現手順: ',
+    '期待動作: ',
+    '現状: ',
+    '優先度: ' + (r['優先度'] || ''),
+    '担当: ' + (r['担当'] || ''),
+    '========================'
+  ].join('\n');
+  navigator.clipboard.writeText(text);
+  toast('コピーしました');
 }
 function showLoginDebug(d) { const el = $('loginDebug'); if (!el) return; el.textContent = (d && typeof d === 'object') ? JSON.stringify(d, null, 2) : (d || ''); }
 function esc(v) { return String(v ?? '').replace(/[&<>"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s])); }
