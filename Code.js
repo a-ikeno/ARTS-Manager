@@ -281,7 +281,7 @@ function getAppData(token) {
 
     try {
       if (user && user.isAdmin) {
-        const u = getUpdateStatus_();
+        const u = getUpdateStatus_({ withManifestPreview: true });
         if (u && typeof u === 'object') {
           update = u;
         }
@@ -564,7 +564,7 @@ function getAdminData(token) {
     locks: sheetObjects_(APP.SHEETS.CLOSE).slice(-36).reverse(),
     logs: sheetObjects_(APP.SHEETS.LOG).slice(-80).reverse(),
     backups: sheetObjects_(APP.SHEETS.BACKUP).slice(-40).reverse(),
-    update: getUpdateStatus_()
+    update: getUpdateStatus_({ withManifestPreview: true })
   };
 }
 
@@ -591,24 +591,51 @@ function getUpdateStatus(token) {
   if (token) { const user = verify_(token); if (!user.isAdmin) throw new Error('管理者権限が必要です。'); }
   return getUpdateStatus_();
 }
-function getUpdateStatus_() {
+function getUpdateStatus_(opts) {
+  opts = opts || {};
   const st = settings_();
   const current = String(st['現在バージョン'] || APP.VERSION);
   const manifestUrl = String(st['更新マニフェストURL'] || '').trim();
+  let displayVersion = current;
+  let releaseNotes = APP.RELEASE_NOTES || [];
+  if (opts.withManifestPreview && manifestUrl) {
+    const preview = fetchManifestPreview_(manifestUrl);
+    if (preview) {
+      if (preview.version) displayVersion = preview.version;
+      if (Array.isArray(preview.notes)) releaseNotes = preview.notes;
+    }
+  }
   const out = {
     ok: true,
-    currentVersion: current,
+    currentVersion: displayVersion,
     bundledVersion: APP.VERSION,
     needUpdate: current !== APP.VERSION,
     mode: 'UPDATE_ENGINE_V2',
     note: '更新センターV2：シート・列・設定・マスタ・バックアップをアプリ内で更新します。コード更新はマニフェストURL設定後に実行できます。',
     copyPasteReduction: '今後の通常アップデートは更新センターに寄せます。大改修時のみ手動上書きの可能性があります。',
     manifestUrl: manifestUrl,
-    releaseNotes: APP.RELEASE_NOTES || [],
+    releaseNotes: releaseNotes,
     readiness: getCodeUpdateReadiness_(),
     history: sheetObjects_(APP.SHEETS.UPDATE).slice(-30).reverse()
   };
   return JSON.parse(JSON.stringify(out));
+}
+// 更新マニフェスト（GitHub等）から現在の version / notes を取得するプレビュー専用関数。
+// 失敗時はnullを返し、呼び出し側は既存の表示（設定シート/APP.RELEASE_NOTES）にフォールバックする。
+function fetchManifestPreview_(manifestUrl) {
+  try {
+    const res = UrlFetchApp.fetch(manifestUrl, { muteHttpExceptions: true });
+    const status = res.getResponseCode();
+    if (status < 200 || status >= 300) return null;
+    const manifest = JSON.parse(res.getContentText());
+    if (!manifest) return null;
+    return {
+      version: manifest.version ? String(manifest.version) : '',
+      notes: Array.isArray(manifest.notes) ? manifest.notes : []
+    };
+  } catch (e) {
+    return null;
+  }
 }
 function runAppUpdate(token) {
   const user = verify_(token); requireAdmin_(user);
@@ -642,11 +669,11 @@ function saveUpdateManifestUrl(url, token) {
   const clean = String(url || '').trim();
   setSetting_('更新マニフェストURL', clean);
   log_('UPDATE_MANIFEST_URL', '設定', user.staffName, clean || '空欄');
-  return { ok: true, message: '更新マニフェストURLを保存しました。', update: getUpdateStatus_() };
+  return { ok: true, message: '更新マニフェストURLを保存しました。', update: getUpdateStatus_({ withManifestPreview: true }) };
 }
 function checkCodeUpdateReadiness(token) {
   const user = verify_(token); requireAdmin_(user);
-  const out = { ok: true, readiness: getCodeUpdateReadiness_(), update: getUpdateStatus_() };
+  const out = { ok: true, readiness: getCodeUpdateReadiness_(), update: getUpdateStatus_({ withManifestPreview: true }) };
   return JSON.parse(JSON.stringify(out));
 }
 function getCodeUpdateReadiness_() {
@@ -693,12 +720,12 @@ function runCodeUpdateFromManifest(token) {
     setSetting_('最終更新者', user.staffName);
     sheet_(APP.SHEETS.UPDATE).appendRow([new Date(), before, manifest.version, user.staffName, (manifest.notes || []).join(' / ') || 'コード更新', 'CODE_DONE_DEPLOYED']);
     log_('CODE_UPDATE', manifest.version, user.staffName, `${before} → ${manifest.version}`);
-    return { ok: true, message: 'コード更新・公開が完了しました。', update: getUpdateStatus_() };
+    return { ok: true, message: 'コード更新・公開が完了しました。', update: getUpdateStatus_({ withManifestPreview: true }) };
   }
 
   sheet_(APP.SHEETS.UPDATE).appendRow([new Date(), before, manifest.version, user.staffName, 'DEPLOY_FAILED: ' + deployError, 'CODE_DONE_DEPLOY_FAILED']);
   log_('CODE_UPDATE_DEPLOY_FAILED', manifest.version, user.staffName, deployError);
-  return { ok: false, partial: true, message: 'コード更新は完了しましたが、自動公開に失敗しました。\n----\n' + deployError + '\n----', update: getUpdateStatus_() };
+  return { ok: false, partial: true, message: 'コード更新は完了しましたが、自動公開に失敗しました。\n----\n' + deployError + '\n----', update: getUpdateStatus_({ withManifestPreview: true }) };
 }
 function deployToProduction_(scriptId, versionDescription, actorName) {
   const productionDeploymentId = String(settings_()['本番DeploymentID'] || '').trim();
@@ -1158,7 +1185,7 @@ function getUpdateCenterSummary(token) {
   const user = verify_(token); requireAdmin_(user);
   return {
     ok: true,
-    update: getUpdateStatus_(),
+    update: getUpdateStatus_({ withManifestPreview: true }),
     histories: getLightRows_(APP.SHEETS.UPDATE, 12),
     backups: getLightRows_(APP.SHEETS.BACKUP, 12)
   };
