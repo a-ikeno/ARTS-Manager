@@ -6,7 +6,7 @@
 const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 
 const APP = {
-  VERSION: '1.1.3',
+  VERSION: '1.1.4',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -40,7 +40,7 @@ const APP = {
     AIWORKER: 'AI_WORKER'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
-  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI'],
+  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI','結果','エラー内容'],
   AIWORKER_HEADERS: ['ID','TaskID','状態','担当AI','作成日時','開始日時','完了日時','結果','ErrorMessage'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
@@ -909,6 +909,93 @@ function saveAiDevRoomRequest(payload, token) {
   sheet_(APP.SHEETS.AIDEVROOM).appendRow([id, now, content, priority, user.staffName, 'WAITING', '', '', '', '']);
   clearSheetObjectsCache(true);
   return safeReturn_({ ok: true, message: 'Claudeへ依頼しました。', id: id });
+}
+
+// Claude Code向け取得・完了基盤（TASK-014拡張）。
+// Webアプリのログイントークンとは別に、設定シート「Claudeワーカートークン」で認証する。
+// 今回はAI開発室シートを直接使い、取得・状態更新・結果返却の基盤のみを実装する
+//（自動実装・自動デプロイ・定期監視・doPost等の外部公開経路はまだ実装しない）。
+function requireWorkerToken_(workerToken) {
+  const expected = String(settings_()['Claudeワーカートークン'] || '').trim();
+  if (!expected || String(workerToken || '').trim() !== expected) {
+    throw new Error('認証に失敗しました。');
+  }
+}
+
+function nextAiDevTaskId_(rows) {
+  const nums = rows
+    .map(r => String(r.obj['TaskID'] || ''))
+    .filter(id => id.indexOf('TASK-') === 0)
+    .map(id => parseInt(id.slice(5), 10))
+    .filter(n => !isNaN(n));
+  const next = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+  return 'TASK-' + ('000' + next).slice(-3);
+}
+
+function claimNextAiDevRequest(workerName, workerToken) {
+  requireWorkerToken_(workerToken);
+  const name = String(workerName || '').trim();
+  if (!name) throw new Error('workerNameが指定されていません。');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('現在他の処理が実行中です。しばらくしてから再試行してください。');
+  try {
+    ensureSchema_();
+    const sh = sheet_(APP.SHEETS.AIDEVROOM);
+    const data = table_(APP.SHEETS.AIDEVROOM);
+    const target = data.rows.find(r => String(r.obj['状態']) === 'WAITING');
+    if (!target) return safeReturn_({ ok: true, found: false });
+    const map = headerMap_(sh);
+    const taskId = nextAiDevTaskId_(data.rows);
+    const now = new Date();
+    sh.getRange(target.rowNumber, map['状態']).setValue('WORKING');
+    sh.getRange(target.rowNumber, map['TaskID']).setValue(taskId);
+    sh.getRange(target.rowNumber, map['開始日時']).setValue(now);
+    sh.getRange(target.rowNumber, map['担当AI']).setValue(name);
+    clearSheetObjectsCache(true);
+    return safeReturn_({
+      ok: true,
+      found: true,
+      task: {
+        id: target.obj['ID'],
+        taskId: taskId,
+        content: target.obj['依頼内容'],
+        priority: target.obj['優先度'],
+        requester: target.obj['依頼者']
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function completeAiDevRequest(payload, workerToken) {
+  requireWorkerToken_(workerToken);
+  payload = payload || {};
+  const taskId = String(payload.taskId || '').trim();
+  if (!taskId) throw new Error('taskIdが指定されていません。');
+  const success = payload.success !== false;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('現在他の処理が実行中です。しばらくしてから再試行してください。');
+  try {
+    ensureSchema_();
+    const sh = sheet_(APP.SHEETS.AIDEVROOM);
+    const data = table_(APP.SHEETS.AIDEVROOM);
+    const row = data.rows.find(r => String(r.obj['TaskID']) === taskId);
+    if (!row) throw new Error('対象のTaskIDが見つかりません。');
+    const map = headerMap_(sh);
+    if (success) {
+      sh.getRange(row.rowNumber, map['状態']).setValue('REVIEW');
+      if (map['結果']) sh.getRange(row.rowNumber, map['結果']).setValue(String(payload.result || ''));
+    } else {
+      sh.getRange(row.rowNumber, map['状態']).setValue('FAILED');
+      sh.getRange(row.rowNumber, map['完了日時']).setValue(new Date());
+      if (map['エラー内容']) sh.getRange(row.rowNumber, map['エラー内容']).setValue(String(payload.errorMessage || payload.result || ''));
+    }
+    clearSheetObjectsCache(true);
+    return safeReturn_({ ok: true, message: taskId + ' を更新しました。' });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // AI Worker基盤（TASK-014）：将来Claude Codeが自動巡回して処理するためのキュー。
