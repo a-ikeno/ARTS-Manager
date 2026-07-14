@@ -6,7 +6,7 @@
 const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 
 const APP = {
-  VERSION: '1.1.1-test',
+  VERSION: '1.1.2',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -598,10 +598,11 @@ function getUpdateStatus_(opts) {
   const manifestUrl = String(st['更新マニフェストURL'] || '').trim();
   let displayVersion = current;
   let releaseNotes = APP.RELEASE_NOTES || [];
+  let latestVersion = '';
   if (opts.withManifestPreview && manifestUrl) {
     const preview = fetchManifestPreview_(manifestUrl);
     if (preview) {
-      if (preview.version) displayVersion = preview.version;
+      if (preview.version) { displayVersion = preview.version; latestVersion = preview.version; }
       if (Array.isArray(preview.notes)) releaseNotes = preview.notes;
     }
   }
@@ -609,6 +610,7 @@ function getUpdateStatus_(opts) {
     ok: true,
     currentVersion: displayVersion,
     bundledVersion: APP.VERSION,
+    latestVersion: latestVersion,
     needUpdate: current !== APP.VERSION,
     mode: 'UPDATE_ENGINE_V2',
     note: '更新センターV2：シート・列・設定・マスタ・バックアップをアプリ内で更新します。コード更新はマニフェストURL設定後に実行できます。',

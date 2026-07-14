@@ -552,7 +552,7 @@ function renderUpdate(u) {
   const notes = (u.releaseNotes || []).map(x => '・' + esc(x)).join('<br>');
   const ready = u.readiness || {};
   $('updateInfo').innerHTML = `
-    <b>現在</b> ${esc(u.currentVersion)} / <b>同梱</b> ${esc(u.bundledVersion)} / ${u.needUpdate ? '更新可能' : '最新版'}<br>
+    <b>現在</b> ${esc(u.currentVersion)} / <b>同梱</b> ${esc(u.bundledVersion)} / <b>最新版</b> ${esc(u.latestVersion || '-')} ${u.needUpdate ? '（更新可能）' : '（最新の状態です）'}<br>
     <span>${esc(u.note || '')}</span><br>
     <small>${esc(u.copyPasteReduction || '')}</small>
     ${notes ? `<div class="release-notes">${notes}</div>` : ''}
