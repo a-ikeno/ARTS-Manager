@@ -7,7 +7,7 @@ const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 const GITHUB_REPO = { OWNER: 'a-ikeno', REPO: 'ARTS-Manager' };
 
 const APP = {
-  VERSION: '1.1.9',
+  VERSION: '1.1.10',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -917,10 +917,25 @@ function saveAiDevRoomRequest(payload, token) {
 // 今回はAI開発室シートを直接使い、取得・状態更新・結果返却の基盤のみを実装する
 //（自動実装・自動デプロイ・定期監視・doPost等の外部公開経路はまだ実装しない）。
 function requireWorkerToken_(workerToken) {
-  const expected = String(settings_()['Claudeワーカートークン'] || '').trim();
+  const expected = String(PropertiesService.getScriptProperties().getProperty('CLAUDE_WORKER_TOKEN') || '').trim();
   if (!expected || String(workerToken || '').trim() !== expected) {
     throw new Error('認証に失敗しました。');
   }
+}
+
+// Claude Worker Tokenの生成・保存（TASK-021）。スプレッドシートには保存せず、
+// GitHub Appの秘密鍵等と同じくPropertiesServiceで管理する。
+function generateAndSaveClaudeWorkerToken(token) {
+  const user = verify_(token); requireAdmin_(user);
+  const newToken = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('CLAUDE_WORKER_TOKEN', newToken);
+  return { ok: true, message: 'Claude Worker Tokenを生成しました。GitHub Secretsへ登録してください。', token: newToken };
+}
+
+function getClaudeWorkerTokenStatus(token) {
+  const user = verify_(token); requireAdmin_(user);
+  const hasToken = !!PropertiesService.getScriptProperties().getProperty('CLAUDE_WORKER_TOKEN');
+  return { ok: true, hasToken: hasToken };
 }
 
 function nextAiDevTaskId_(rows) {
@@ -1111,8 +1126,8 @@ function doPost(e) {
 // 取得しサーバー内で完結させ、ブラウザへは一切送信・表示しない。
 function testClaimNextAiDevRequest(token) {
   const user = verify_(token); requireAdmin_(user);
-  const workerToken = String(settings_()['Claudeワーカートークン'] || '').trim();
-  if (!workerToken) throw new Error('Claudeワーカートークンが設定シートに登録されていません。');
+  const workerToken = String(PropertiesService.getScriptProperties().getProperty('CLAUDE_WORKER_TOKEN') || '').trim();
+  if (!workerToken) throw new Error('Claude Worker Tokenが登録されていません。');
   const result = claimNextAiDevRequest('Claude-Code-Test', workerToken);
   if (result && result.found && result.task) {
     const row = sheetObjects_(APP.SHEETS.AIDEVROOM).find(r => String(r['TaskID']) === String(result.task.taskId));

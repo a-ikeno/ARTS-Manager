@@ -77,6 +77,8 @@ function server(fn, ...args) {
       case 'createAiWorkerTask': return runner.createAiWorkerTask(...args);
       case 'updateAiWorkerTask': return runner.updateAiWorkerTask(...args);
       case 'testClaimNextAiDevRequest': return runner.testClaimNextAiDevRequest(...args); // TEMP TEST（削除予定）
+      case 'generateAndSaveClaudeWorkerToken': return runner.generateAndSaveClaudeWorkerToken(...args); // TEMP TEST（削除予定）
+      case 'getClaudeWorkerTokenStatus': return runner.getClaudeWorkerTokenStatus(...args); // TEMP TEST（削除予定）
       case 'saveGitHubAppConfig': return runner.saveGitHubAppConfig(...args);
       case 'getGitHubAppConfigStatus': return runner.getGitHubAppConfigStatus(...args);
       case 'createGitHubIssueForAiDevRequest': return runner.createGitHubIssueForAiDevRequest(...args);
@@ -820,6 +822,32 @@ async function testClaimWorker() {
       el.innerHTML = '<b>取得対象：なし</b>（WAITING依頼がありません）';
     }
     await loadAiDevRoom();
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
+}
+// TEMP TEST（実機確認後に削除予定）: Claude Worker Token生成
+async function generateWorkerTokenTemp() {
+  const el = $('workerTokenResult');
+  try {
+    const r = await server('generateAndSaveClaudeWorkerToken', STATE.token);
+    if (el) {
+      el.innerHTML = `
+        <b>生成しました。GitHub Secretsの CLAUDE_WORKER_TOKEN に登録してください：</b><br>
+        <code style="word-break:break-all;user-select:all">${esc(r.token)}</code>
+      `;
+    }
+    toast((r && r.message) || '生成しました');
+    await refreshWorkerTokenStatus();
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
+}
+async function refreshWorkerTokenStatus() {
+  const el = $('workerTokenStatus');
+  try {
+    const r = await server('getClaudeWorkerTokenStatus', STATE.token);
+    if (el) el.textContent = 'Token登録状態：' + (r.hasToken ? '✅ 登録済み' : '❌ 未登録');
   } catch (e) {
     if (el) el.textContent = 'エラー: ' + (e.message || String(e));
   }

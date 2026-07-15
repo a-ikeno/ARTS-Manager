@@ -152,6 +152,18 @@
         <h3>依頼一覧</h3>
         <div id="aiDevRoomList" class="list"><p class="muted">読み込み中</p></div>
       </div>
+      <!-- TEMP TEST（実機確認後に削除予定）: Claude Worker Token生成 -->
+      <div class="panel">
+        <h3>Claude Worker Token（TEMP）</h3>
+        <p class="muted small">生成した値をGitHubリポジトリのSecrets「CLAUDE_WORKER_TOKEN」に登録してください。値は生成時にしか表示されません。</p>
+        <div class="actions">
+          <button onclick="generateWorkerTokenTemp()">Token生成</button>
+          <button onclick="refreshWorkerTokenStatus()">状態確認</button>
+        </div>
+        <div id="workerTokenResult" class="muted small" style="margin-top:8px"></div>
+        <div id="workerTokenStatus" class="muted small" style="margin-top:4px"></div>
+      </div>
+      <!-- /TEMP TEST -->
       <!-- TEMP TEST（実機確認後に削除予定）: AI Worker取得テスト -->
       <div class="panel">
         <h3>Worker取得テスト</h3>
