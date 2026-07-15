@@ -160,6 +160,28 @@
         <div id="workerTestResult" class="muted small" style="margin-top:8px"></div>
       </div>
       <!-- /TEMP TEST -->
+      <!-- TEMP TEST（実機確認後に削除予定）: GitHub App設定 -->
+      <div class="panel">
+        <h3>GitHub App設定（TEMP）</h3>
+        <label>App ID</label>
+        <input id="githubAppId" type="text" placeholder="例：123456">
+        <label>Installation ID</label>
+        <input id="githubInstallationId" type="text" placeholder="例：987654">
+        <label>Private Key（複数行）</label>
+        <textarea id="githubPrivateKey" rows="8" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
+        <button onclick="saveGitHubAppConfigTemp()">保存</button>
+        <div id="githubAppConfigStatus" class="muted small" style="margin-top:8px"></div>
+      </div>
+      <!-- /TEMP TEST -->
+      <!-- TEMP TEST（実機確認後に削除予定）: GitHub Issueテスト -->
+      <div class="panel">
+        <h3>Issueテスト（TEMP）</h3>
+        <label>依頼ID</label>
+        <input id="githubIssueTestId" type="text" placeholder="例：AIDEV-001">
+        <button onclick="testCreateGitHubIssue()">Issue作成テスト</button>
+        <div id="githubIssueTestResult" class="muted small" style="margin-top:8px"></div>
+      </div>
+      <!-- /TEMP TEST -->
       <div class="panel"><button onclick="showPage('adminPage')">戻る</button></div>
     </section>
 

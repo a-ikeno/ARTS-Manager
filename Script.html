@@ -824,6 +824,70 @@ async function testClaimWorker() {
     if (el) el.textContent = 'エラー: ' + (e.message || String(e));
   }
 }
+// TEMP TEST（実機確認後に削除予定）: GitHub App設定の保存＋登録状態表示
+async function saveGitHubAppConfigTemp() {
+  const el = $('githubAppConfigStatus');
+  try {
+    const payload = {};
+    const appId = $('githubAppId') ? $('githubAppId').value.trim() : '';
+    const installationId = $('githubInstallationId') ? $('githubInstallationId').value.trim() : '';
+    const privateKey = $('githubPrivateKey') ? $('githubPrivateKey').value : '';
+    if (appId) payload.appId = appId;
+    if (installationId) payload.installationId = installationId;
+    if (privateKey) payload.privateKey = privateKey;
+    const r = await server('saveGitHubAppConfig', payload, STATE.token);
+    toast((r && r.message) || '保存しました');
+    if ($('githubPrivateKey')) $('githubPrivateKey').value = '';
+    await refreshGitHubAppConfigStatus();
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
+}
+async function refreshGitHubAppConfigStatus() {
+  const el = $('githubAppConfigStatus');
+  try {
+    const r = await server('getGitHubAppConfigStatus', STATE.token);
+    if (el) {
+      el.innerHTML = `
+        App ID：${r.hasAppId ? '✅ 登録済' : '❌ 未登録'}<br>
+        Installation ID：${r.hasInstallationId ? '✅ 登録済' : '❌ 未登録'}<br>
+        Private Key：${r.hasPrivateKey ? '✅ 登録済' : '❌ 未登録'}
+      `;
+    }
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
+}
+// TEMP TEST（実機確認後に削除予定）: GitHub Issue作成テスト
+async function testCreateGitHubIssue() {
+  const el = $('githubIssueTestResult');
+  try {
+    const id = $('githubIssueTestId') ? $('githubIssueTestId').value.trim() : '';
+    if (!id) { toast('依頼IDを入力してください'); return; }
+    const r = await server('createGitHubIssueForAiDevRequest', id, STATE.token);
+    console.log('[testCreateGitHubIssue]', r);
+    if (el) {
+      if (r && r.alreadyExists) {
+        el.innerHTML = `
+          <b>既存Issue</b><br>
+          Issue番号：${esc(String(r.issueNo))}<br>
+          URL：${esc(r.issueUrl)}
+        `;
+      } else if (r && r.ok) {
+        el.innerHTML = `
+          <b>作成成功</b><br>
+          Issue番号：${esc(String(r.issueNo))}<br>
+          URL：${esc(r.issueUrl)}<br>
+          状態：${esc(r.state)}
+        `;
+      } else {
+        el.textContent = '不明な応答です';
+      }
+    }
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
+}
 function collectDebugInfo() {
   const activePage = document.querySelector('.page.active');
   let stateSnapshot = {};

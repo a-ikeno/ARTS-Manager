@@ -7,7 +7,7 @@ const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 const GITHUB_REPO = { OWNER: 'a-ikeno', REPO: 'ARTS-Manager' };
 
 const APP = {
-  VERSION: '1.1.6',
+  VERSION: '1.1.7',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
