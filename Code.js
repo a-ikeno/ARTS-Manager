@@ -4,9 +4,10 @@
  * 4 file distribution: Code.gs / Index.html / Style.html / Script.html
  */
 const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
+const GITHUB_REPO = { OWNER: 'a-ikeno', REPO: 'ARTS-Manager' };
 
 const APP = {
-  VERSION: '1.1.5',
+  VERSION: '1.1.6',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -40,7 +41,7 @@ const APP = {
     AIWORKER: 'AI_WORKER'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
-  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI','結果','エラー内容'],
+  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI','結果','エラー内容','GitHubIssueNo','GitHubIssueURL','GitHubState','GitHubCreatedAt','最終同期日時'],
   AIWORKER_HEADERS: ['ID','TaskID','状態','担当AI','作成日時','開始日時','完了日時','結果','ErrorMessage'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
@@ -1015,6 +1016,137 @@ function testClaimNextAiDevRequest(token) {
     }
   }
   return safeReturn_(result);
+}
+
+// GitHub App認証（TASK-018）：AppID・InstallationID・秘密鍵はPropertiesServiceに保存し、
+// スプレッドシートには一切保存しない。JWT生成→Installation Token取得→Issue作成、の順で使う。
+function saveGitHubAppConfig(payload, token) {
+  const user = verify_(token); requireAdmin_(user);
+  payload = payload || {};
+  const props = PropertiesService.getScriptProperties();
+  if (payload.appId !== undefined) props.setProperty('GITHUB_APP_ID', String(payload.appId).trim());
+  if (payload.installationId !== undefined) props.setProperty('GITHUB_APP_INSTALLATION_ID', String(payload.installationId).trim());
+  if (payload.privateKey !== undefined) props.setProperty('GITHUB_APP_PRIVATE_KEY', String(payload.privateKey));
+  return { ok: true, message: 'GitHub App設定を保存しました。' };
+}
+
+function getGitHubAppConfigStatus(token) {
+  const user = verify_(token); requireAdmin_(user);
+  const props = PropertiesService.getScriptProperties();
+  return {
+    ok: true,
+    hasAppId: !!props.getProperty('GITHUB_APP_ID'),
+    hasInstallationId: !!props.getProperty('GITHUB_APP_INSTALLATION_ID'),
+    hasPrivateKey: !!props.getProperty('GITHUB_APP_PRIVATE_KEY')
+  };
+}
+
+function base64UrlEncodeString_(str) {
+  return Utilities.base64EncodeWebSafe(Utilities.newBlob(str).getBytes()).replace(/=+$/, '');
+}
+
+function base64UrlEncodeBytes_(bytes) {
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, '');
+}
+
+function buildGitHubAppJwt_() {
+  const props = PropertiesService.getScriptProperties();
+  const appId = props.getProperty('GITHUB_APP_ID');
+  const privateKey = props.getProperty('GITHUB_APP_PRIVATE_KEY');
+  if (!appId || !privateKey) throw new Error('GitHub Appの設定（AppID・秘密鍵）が登録されていません。');
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const claims = { iat: now - 60, exp: now + 540, iss: appId };
+  const signingInput = base64UrlEncodeString_(JSON.stringify(header)) + '.' + base64UrlEncodeString_(JSON.stringify(claims));
+  const signature = Utilities.computeRsaSha256Signature(signingInput, privateKey);
+  return signingInput + '.' + base64UrlEncodeBytes_(signature);
+}
+
+function getGitHubInstallationToken_() {
+  const props = PropertiesService.getScriptProperties();
+  const installationId = props.getProperty('GITHUB_APP_INSTALLATION_ID');
+  if (!installationId) throw new Error('GitHub AppのInstallationIDが登録されていません。');
+  const jwt = buildGitHubAppJwt_();
+  const url = 'https://api.github.com/app/installations/' + encodeURIComponent(installationId) + '/access_tokens';
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + jwt,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2026-03-10'
+    },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('GitHub Installation Token取得失敗: HTTP ' + res.getResponseCode() + ' / ' + res.getContentText());
+  return JSON.parse(res.getContentText()).token;
+}
+
+function createGitHubIssue_(title, body) {
+  const installationToken = getGitHubInstallationToken_();
+  const url = 'https://api.github.com/repos/' + GITHUB_REPO.OWNER + '/' + GITHUB_REPO.REPO + '/issues';
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Bearer ' + installationToken,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2026-03-10'
+    },
+    payload: JSON.stringify({ title: title, body: body }),
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('GitHub Issue作成失敗: HTTP ' + res.getResponseCode() + ' / ' + res.getContentText());
+  return JSON.parse(res.getContentText());
+}
+
+// AI開発室の依頼IDに対応するGitHub Issueを作成し、結果をAI開発室シートへ書き戻す。
+// 既にGitHubIssueNoがある依頼は再登録しない（重複作成防止）。
+function createGitHubIssueForAiDevRequest(devRoomId, token) {
+  const user = verify_(token); requireAdmin_(user);
+  ensureSchema_();
+  const id = String(devRoomId || '').trim();
+  if (!id) throw new Error('依頼IDが指定されていません。');
+  const sh = sheet_(APP.SHEETS.AIDEVROOM);
+  const data = table_(APP.SHEETS.AIDEVROOM);
+  const row = data.rows.find(r => String(r.obj['ID']) === id);
+  if (!row) throw new Error('対象の依頼が見つかりません。');
+  if (row.obj['GitHubIssueNo']) {
+    return safeReturn_({
+      ok: true,
+      alreadyExists: true,
+      issueNo: row.obj['GitHubIssueNo'],
+      issueUrl: row.obj['GitHubIssueURL']
+    });
+  }
+  const content = String(row.obj['依頼内容'] || '');
+  const title = '[' + id + '] ' + content.split('\n')[0].slice(0, 80);
+  const body = [
+    '## ARTS Manager 自動登録Issue',
+    'このIssueはARTS Manager「AI開発室」からの依頼をもとに自動生成されました。',
+    '',
+    '- 依頼ID: ' + id,
+    '- 依頼内容: ' + content,
+    '- 優先度: ' + String(row.obj['優先度'] || ''),
+    '- 依頼者: ' + String(row.obj['依頼者'] || ''),
+    '- 登録日時: ' + fmt_(row.obj['日時'], 'yyyy-MM-dd HH:mm:ss')
+  ].join('\n');
+  const issue = createGitHubIssue_(title, body);
+  const map = headerMap_(sh);
+  const now = new Date();
+  if (map['GitHubIssueNo']) sh.getRange(row.rowNumber, map['GitHubIssueNo']).setValue(issue.number);
+  if (map['GitHubIssueURL']) sh.getRange(row.rowNumber, map['GitHubIssueURL']).setValue(issue.html_url);
+  if (map['GitHubState']) sh.getRange(row.rowNumber, map['GitHubState']).setValue(issue.state);
+  if (map['GitHubCreatedAt']) sh.getRange(row.rowNumber, map['GitHubCreatedAt']).setValue(issue.created_at);
+  if (map['最終同期日時']) sh.getRange(row.rowNumber, map['最終同期日時']).setValue(now);
+  clearSheetObjectsCache(true);
+  return safeReturn_({
+    ok: true,
+    alreadyExists: false,
+    issueNo: issue.number,
+    issueUrl: issue.html_url,
+    state: issue.state,
+    createdAt: issue.created_at
+  });
 }
 
 // AI Worker基盤（TASK-014）：将来Claude Codeが自動巡回して処理するためのキュー。
