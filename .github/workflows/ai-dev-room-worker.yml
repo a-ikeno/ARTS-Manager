@@ -1,0 +1,129 @@
+name: AI Dev Room Worker
+
+# AI開発室で作成された依頼（GitHub Issue）を自動実装するワークフロー（TASK-020）。
+#
+# 流れ：
+#   claim（AI開発室をWORKING化）
+#   → Claude Codeが実装・自己レビュー・commit・push
+#   → complete（AI開発室をREVIEW化、結果を保存）
+#   → manifest再生成・commit・push
+#   → reportPushed（AI開発室をPUSHED→DEPLOY_WAITINGへ）
+#
+# 本番への反映（更新センターの「コード更新」）はここでは実行しない。
+# 引き続き人間が更新センターから手動で実行する。
+#
+# 必要なリポジトリSecrets：
+#   ANTHROPIC_API_KEY   … Claude Code実行用
+#   ARTS_WEBAPP_URL     … ARTS ManagerのWebアプリURL（doPost宛先）
+#   CLAUDE_WORKER_TOKEN … 設定シート「Claudeワーカートークン」と同じ値
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    if: startsWith(github.event.issue.title, '[AIDEV-')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Extract 依頼ID from Issue title
+        id: extract
+        run: |
+          TITLE="${{ github.event.issue.title }}"
+          DEV_ROOM_ID=$(echo "$TITLE" | sed -n 's/^\[\([^]]*\)\].*/\1/p')
+          if [ -z "$DEV_ROOM_ID" ]; then
+            echo "依頼IDをタイトルから抽出できませんでした: $TITLE"
+            exit 1
+          fi
+          echo "dev_room_id=$DEV_ROOM_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Claim request（AI開発室をWORKING化）
+        id: claim
+        run: |
+          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "console.log(JSON.stringify({action:'claim',devRoomId:process.env.DEV_ROOM_ID,workerName:'github-actions',workerToken:process.env.WORKER_TOKEN}))")" \
+            -o claim_response.json
+          cat claim_response.json | node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            if (!data.ok || !data.found) { console.error('claim failed or nothing to claim:', JSON.stringify(data)); process.exit(1); }
+            console.log('task_id=' + data.task.taskId);
+          " >> "$GITHUB_OUTPUT"
+        env:
+          DEV_ROOM_ID: ${{ steps.extract.outputs.dev_room_id }}
+          WORKER_TOKEN: ${{ secrets.CLAUDE_WORKER_TOKEN }}
+
+      - name: Run Claude Code（実装・自己レビュー・commit・push）
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            このリポジトリのCLAUDE.mdのルールに必ず従って作業してください。
+            以下のARTS Manager「AI開発室」からの依頼だけを実装してください。依頼に含まれない
+            箇所のリファクタリングや最適化は行わないでください。
+
+            --- 依頼内容（Issue本文） ---
+            ${{ github.event.issue.body }}
+
+            実装後は必ず自己レビューを行い、Code.jsのAPP.VERSIONを1つ繰り上げてください。
+            そのうえで、このブランチに対して直接 git commit と git push を実行してください
+            （プルリクエストは作成しないでください）。
+          claude_args: |
+            --allowedTools "Bash(git *),Read,Edit,Write,Glob,Grep"
+
+      - name: Complete（AI開発室をREVIEW化）
+        if: success()
+        run: |
+          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "console.log(JSON.stringify({action:'complete',taskId:process.env.TASK_ID,success:true,result:'GitHub Actionsで実装・自己レビューが完了しました。'}))")"
+        env:
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+
+      - name: Update manifest（マニフェスト再生成・commit・push）
+        if: success()
+        run: |
+          git pull --ff-only
+          node scripts/build-manifest.js "GitHub Issue #${{ github.event.issue.number }} (${{ steps.extract.outputs.dev_room_id }}) を自動実装"
+          git add docs/arts-update-manifest.json
+          git -c user.name="arts-manager-bot" -c user.email="arts-manager-bot@users.noreply.github.com" \
+            commit -m "更新マニフェストを自動更新（Issue #${{ github.event.issue.number }}）"
+          git push
+
+      - name: Report pushed（AI開発室をPUSHED→DEPLOY_WAITINGへ）
+        if: success()
+        run: |
+          export COMMIT_HASH="$(git rev-parse HEAD)"
+          export DEPLOY_VERSION="$(node -e "console.log(require('./docs/arts-update-manifest.json').version)")"
+          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "console.log(JSON.stringify({action:'reportPushed',taskId:process.env.TASK_ID,status:'PUSHED',commitHash:process.env.COMMIT_HASH}))")"
+          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "console.log(JSON.stringify({action:'reportPushed',taskId:process.env.TASK_ID,status:'DEPLOY_WAITING',deployVersion:process.env.DEPLOY_VERSION}))")"
+          echo "本番反映は更新センターから手動で実行してください（このワークフローでは実行しません）。"
+        env:
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+
+      - name: Report failure（AI開発室をFAILEDへ）
+        if: failure()
+        run: |
+          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "console.log(JSON.stringify({action:'complete',taskId:process.env.TASK_ID,success:false,errorMessage:'GitHub Actionsでの自動実装に失敗しました。実行ログを確認してください（Run: ${{ github.run_id }}）。'}))")" || true
+        env:
+          TASK_ID: ${{ steps.claim.outputs.task_id }}

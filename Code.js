@@ -7,7 +7,7 @@ const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 const GITHUB_REPO = { OWNER: 'a-ikeno', REPO: 'ARTS-Manager' };
 
 const APP = {
-  VERSION: '1.1.8',
+  VERSION: '1.1.9',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -41,7 +41,7 @@ const APP = {
     AIWORKER: 'AI_WORKER'
   },
   AIQUEUE_HEADERS: ['ID','TaskID','状態','担当AI','優先度','作成日時','開始日時','完了日時','Prompt','Response','Build','Deploy','WorkerStatus','BuildVersion','ErrorMessage'],
-  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI','結果','エラー内容','GitHubIssueNo','GitHubIssueURL','GitHubState','GitHubCreatedAt','最終同期日時'],
+  AIDEVROOM_HEADERS: ['ID','日時','依頼内容','優先度','依頼者','状態','TaskID','開始日時','完了日時','担当AI','結果','エラー内容','GitHubIssueNo','GitHubIssueURL','GitHubState','GitHubCreatedAt','最終同期日時','CommitHash','DeployVersion'],
   AIWORKER_HEADERS: ['ID','TaskID','状態','担当AI','作成日時','開始日時','完了日時','結果','ErrorMessage'],
   AIDEPLOYQUEUE_HEADERS: ['ID','TaskID','AIQueueID','状態','BuildVersion','作成日時','Build完了日時','Deploy日時','担当AI','備考'],
   RELEASEDB_HEADERS: ['ID','日時','バージョン','追加','修正','削除','リリースノート','状態','作成者'],
@@ -996,6 +996,113 @@ function completeAiDevRequest(payload, workerToken) {
     return safeReturn_({ ok: true, message: taskId + ' を更新しました。' });
   } finally {
     lock.releaseLock();
+  }
+}
+
+// GitHub Actions等、特定のIssueに紐づく依頼IDを直接指定して取得する版（TASK-020）。
+// claimNextAiDevRequest（最古のWAITING1件を取得）は無変更のまま維持し、
+// Issue駆動のフローではこちらを使う。
+function claimSpecificAiDevRequest(devRoomId, workerName, workerToken) {
+  requireWorkerToken_(workerToken);
+  const id = String(devRoomId || '').trim();
+  if (!id) throw new Error('devRoomIdが指定されていません。');
+  const name = String(workerName || '').trim();
+  if (!name) throw new Error('workerNameが指定されていません。');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('現在他の処理が実行中です。しばらくしてから再試行してください。');
+  try {
+    ensureSchema_();
+    const sh = sheet_(APP.SHEETS.AIDEVROOM);
+    const data = table_(APP.SHEETS.AIDEVROOM);
+    const target = data.rows.find(r => String(r.obj['ID']) === id);
+    if (!target) throw new Error('対象の依頼が見つかりません。');
+    if (String(target.obj['状態']) !== 'WAITING') {
+      return safeReturn_({ ok: true, found: false, message: '対象はWAITING状態ではありません（現在: ' + target.obj['状態'] + '）。' });
+    }
+    const map = headerMap_(sh);
+    const taskId = nextAiDevTaskId_(data.rows);
+    const now = new Date();
+    sh.getRange(target.rowNumber, map['状態']).setValue('WORKING');
+    sh.getRange(target.rowNumber, map['TaskID']).setValue(taskId);
+    sh.getRange(target.rowNumber, map['開始日時']).setValue(now);
+    sh.getRange(target.rowNumber, map['担当AI']).setValue(name);
+    clearSheetObjectsCache(true);
+    return safeReturn_({
+      ok: true,
+      found: true,
+      task: {
+        id: target.obj['ID'],
+        taskId: taskId,
+        content: target.obj['依頼内容'],
+        priority: target.obj['優先度'],
+        requester: target.obj['依頼者']
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// commitHash/deployVersion付きの状態更新（PUSHED / DEPLOY_WAITINGのみ許可）。
+// completeAiDevRequest（REVIEW/FAILEDへの遷移）は無変更のまま、その後段のGit Push・
+// マニフェスト更新の進捗だけをこちらで記録する。DEPLOY自体（更新センターの「コード更新」）は
+// 引き続き人間が手動で実行する前提で、ここでは状態をDEPLOY_WAITINGにするだけで止める。
+function reportAiDevRequestPushed(payload, workerToken) {
+  requireWorkerToken_(workerToken);
+  payload = payload || {};
+  const taskId = String(payload.taskId || '').trim();
+  if (!taskId) throw new Error('taskIdが指定されていません。');
+  const status = String(payload.status || '').trim();
+  const validStatuses = ['PUSHED', 'DEPLOY_WAITING'];
+  if (validStatuses.indexOf(status) === -1) throw new Error('不正な状態です（PUSHED / DEPLOY_WAITINGのみ）。');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('現在他の処理が実行中です。しばらくしてから再試行してください。');
+  try {
+    ensureSchema_();
+    const sh = sheet_(APP.SHEETS.AIDEVROOM);
+    const data = table_(APP.SHEETS.AIDEVROOM);
+    const row = data.rows.find(r => String(r.obj['TaskID']) === taskId);
+    if (!row) throw new Error('対象のTaskIDが見つかりません。');
+    const map = headerMap_(sh);
+    sh.getRange(row.rowNumber, map['状態']).setValue(status);
+    if (map['CommitHash'] && payload.commitHash !== undefined) sh.getRange(row.rowNumber, map['CommitHash']).setValue(String(payload.commitHash));
+    if (map['DeployVersion'] && payload.deployVersion !== undefined) sh.getRange(row.rowNumber, map['DeployVersion']).setValue(String(payload.deployVersion));
+    clearSheetObjectsCache(true);
+    return safeReturn_({ ok: true, message: taskId + ' の状態を ' + status + ' に更新しました。' });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// GitHub Actions等の外部プロセスからHTTPS経由で呼び出すための窓口（TASK-020）。
+// 認証はClaudeワーカートークン（各関数内のrequireWorkerToken_）に一本化し、
+// Webアプリのログインセッションとは完全に独立させる。
+function doPost(e) {
+  try {
+    const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const action = String(body.action || '');
+    const workerToken = body.workerToken;
+    let result;
+    switch (action) {
+      case 'claim':
+        result = claimSpecificAiDevRequest(body.devRoomId, body.workerName, workerToken);
+        break;
+      case 'claimNext':
+        result = claimNextAiDevRequest(body.workerName, workerToken);
+        break;
+      case 'complete':
+        result = completeAiDevRequest(body, workerToken);
+        break;
+      case 'reportPushed':
+        result = reportAiDevRequestPushed(body, workerToken);
+        break;
+      default:
+        throw new Error('不明なactionです: ' + action);
+    }
+    return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    const message = String(err && err.message ? err.message : err);
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: message })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
