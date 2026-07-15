@@ -76,6 +76,7 @@ function server(fn, ...args) {
       case 'getAiWorkerQueue': return runner.getAiWorkerQueue(...args);
       case 'createAiWorkerTask': return runner.createAiWorkerTask(...args);
       case 'updateAiWorkerTask': return runner.updateAiWorkerTask(...args);
+      case 'testClaimNextAiDevRequest': return runner.testClaimNextAiDevRequest(...args); // TEMP TEST（削除予定）
       default: return reject(new Error('Unsupported function: ' + fn));
     }
   });
@@ -793,6 +794,32 @@ function renderAiDevRoomList(rows) {
       </div>
     </div>`;
   }).join('') || '<p class="muted">依頼はまだありません</p>';
+}
+// TEMP TEST（実機確認後に削除予定）: Worker取得テストボタンの処理。
+// Workerトークンはサーバー側で完結しており、ブラウザへは一切送信・表示しない。
+async function testClaimWorker() {
+  const el = $('workerTestResult');
+  try {
+    const r = await server('testClaimNextAiDevRequest', STATE.token);
+    console.log('[testClaimWorker]', r);
+    if (!el) return;
+    if (r && r.found && r.task) {
+      const t = r.task;
+      el.innerHTML = `
+        <b>取得対象：あり</b><br>
+        依頼ID：${esc(t.id)}<br>
+        TaskID：${esc(t.taskId)}<br>
+        状態：${esc(t.status || '')}<br>
+        開始日時：${esc(t.startedAt ? formatAiDevDateTime(t.startedAt) : '-')}<br>
+        担当AI：${esc(t.worker || '')}
+      `;
+    } else {
+      el.innerHTML = '<b>取得対象：なし</b>（WAITING依頼がありません）';
+    }
+    await loadAiDevRoom();
+  } catch (e) {
+    if (el) el.textContent = 'エラー: ' + (e.message || String(e));
+  }
 }
 function collectDebugInfo() {
   const activePage = document.querySelector('.page.active');

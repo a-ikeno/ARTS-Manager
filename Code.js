@@ -6,7 +6,7 @@
 const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 
 const APP = {
-  VERSION: '1.1.4',
+  VERSION: '1.1.5',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -996,6 +996,25 @@ function completeAiDevRequest(payload, workerToken) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// TEMP TEST（実機確認後に削除予定）: Worker取得テスト用の管理者専用関数（TASK-015A）。
+// claimNextAiDevRequest本体は無変更のまま呼び出すだけ。Workerトークンはここで設定シートから
+// 取得しサーバー内で完結させ、ブラウザへは一切送信・表示しない。
+function testClaimNextAiDevRequest(token) {
+  const user = verify_(token); requireAdmin_(user);
+  const workerToken = String(settings_()['Claudeワーカートークン'] || '').trim();
+  if (!workerToken) throw new Error('Claudeワーカートークンが設定シートに登録されていません。');
+  const result = claimNextAiDevRequest('Claude-Code-Test', workerToken);
+  if (result && result.found && result.task) {
+    const row = sheetObjects_(APP.SHEETS.AIDEVROOM).find(r => String(r['TaskID']) === String(result.task.taskId));
+    if (row) {
+      result.task.status = row['状態'];
+      result.task.startedAt = row['開始日時'];
+      result.task.worker = row['担当AI'];
+    }
+  }
+  return safeReturn_(result);
 }
 
 // AI Worker基盤（TASK-014）：将来Claude Codeが自動巡回して処理するためのキュー。
