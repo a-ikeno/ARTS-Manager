@@ -54,14 +54,23 @@ jobs:
       - name: Claim request（AI開発室をWORKING化）
         id: claim
         run: |
-          HTTP_CODE=$(curl -s -o claim_response.json -w "%{http_code}" -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+          set +e
+          echo "webapp_url_length=${#WEBAPP_URL}"
+          HTTP_CODE=$(curl -s -o claim_response.json -w "%{http_code}" -X POST "$WEBAPP_URL" \
             -H "Content-Type: application/json" \
             -d "$(node -e "console.log(JSON.stringify({action:'claim',devRoomId:process.env.DEV_ROOM_ID,workerName:'github-actions',workerToken:process.env.WORKER_TOKEN}))")")
+          CURL_EXIT=$?
+          echo "curl_exit_code=$CURL_EXIT"
           echo "HTTP:$HTTP_CODE"
           echo "---- response body ----"
-          cat claim_response.json
+          cat claim_response.json 2>/dev/null || echo "(レスポンスファイルがありません)"
           echo ""
           echo "------------------------"
+          set -e
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "curlコマンド自体が失敗しました（curl exit $CURL_EXIT）。ARTS_WEBAPP_URLの値（改行・引用符混入や末尾スペース等）を確認してください。"
+            exit "$CURL_EXIT"
+          fi
           cat claim_response.json | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             if (!data.ok || !data.found) { console.error('claim failed or nothing to claim:', JSON.stringify(data)); process.exit(1); }
@@ -70,6 +79,7 @@ jobs:
         env:
           DEV_ROOM_ID: ${{ steps.extract.outputs.dev_room_id }}
           WORKER_TOKEN: ${{ secrets.CLAUDE_WORKER_TOKEN }}
+          WEBAPP_URL: ${{ secrets.ARTS_WEBAPP_URL }}
 
       - name: Run Claude Code（実装・自己レビュー・commit・push）
         uses: anthropics/claude-code-action@v1
