@@ -7,7 +7,7 @@ const SPREADSHEET_ID = '1iIXf9noqUBgmrEOgEwB1tnfgjnXiq-pIyuMS5mcTBlA';
 const GITHUB_REPO = { OWNER: 'a-ikeno', REPO: 'ARTS-Manager' };
 
 const APP = {
-  VERSION: '1.1.7',
+  VERSION: '1.1.8',
   NAME: 'ARTS Manager',
   TZ: 'Asia/Tokyo',
   TOKEN_TTL_SEC: 21600,
@@ -1026,7 +1026,15 @@ function saveGitHubAppConfig(payload, token) {
   const props = PropertiesService.getScriptProperties();
   if (payload.appId !== undefined) props.setProperty('GITHUB_APP_ID', String(payload.appId).trim());
   if (payload.installationId !== undefined) props.setProperty('GITHUB_APP_INSTALLATION_ID', String(payload.installationId).trim());
-  if (payload.privateKey !== undefined) props.setProperty('GITHUB_APP_PRIVATE_KEY', String(payload.privateKey));
+  if (payload.privateKey !== undefined) {
+    const privateKey = String(payload.privateKey).trim();
+    if (privateKey.indexOf('-----BEGIN RSA PRIVATE KEY-----') === 0) {
+      throw new Error('この秘密鍵はPKCS#1形式（RSA PRIVATE KEY）です。Apps ScriptはPKCS#8形式のみ対応しています。'
+        + 'openssl pkcs8 -topk8 -inform pem -in private-key.pem -outform pem -nocrypt -out private-key-pkcs8.pem'
+        + ' で変換した「-----BEGIN PRIVATE KEY-----」形式の鍵を貼り直してください。');
+    }
+    props.setProperty('GITHUB_APP_PRIVATE_KEY', privateKey);
+  }
   return { ok: true, message: 'GitHub App設定を保存しました。' };
 }
 
@@ -1052,8 +1060,11 @@ function base64UrlEncodeBytes_(bytes) {
 function buildGitHubAppJwt_() {
   const props = PropertiesService.getScriptProperties();
   const appId = props.getProperty('GITHUB_APP_ID');
-  const privateKey = props.getProperty('GITHUB_APP_PRIVATE_KEY');
+  const privateKey = String(props.getProperty('GITHUB_APP_PRIVATE_KEY') || '').trim();
   if (!appId || !privateKey) throw new Error('GitHub Appの設定（AppID・秘密鍵）が登録されていません。');
+  if (privateKey.indexOf('-----BEGIN RSA PRIVATE KEY-----') === 0) {
+    throw new Error('登録されている秘密鍵がPKCS#1形式（RSA PRIVATE KEY）です。PKCS#8形式（BEGIN PRIVATE KEY）に変換して再登録してください。');
+  }
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const claims = { iat: now - 60, exp: now + 540, iss: appId };
