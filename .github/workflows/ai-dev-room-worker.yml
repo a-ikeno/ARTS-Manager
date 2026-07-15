@@ -54,10 +54,14 @@ jobs:
       - name: Claim request（AI開発室をWORKING化）
         id: claim
         run: |
-          curl -sf -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
+          HTTP_CODE=$(curl -s -o claim_response.json -w "%{http_code}" -X POST "${{ secrets.ARTS_WEBAPP_URL }}" \
             -H "Content-Type: application/json" \
-            -d "$(node -e "console.log(JSON.stringify({action:'claim',devRoomId:process.env.DEV_ROOM_ID,workerName:'github-actions',workerToken:process.env.WORKER_TOKEN}))")" \
-            -o claim_response.json
+            -d "$(node -e "console.log(JSON.stringify({action:'claim',devRoomId:process.env.DEV_ROOM_ID,workerName:'github-actions',workerToken:process.env.WORKER_TOKEN}))")")
+          echo "HTTP:$HTTP_CODE"
+          echo "---- response body ----"
+          cat claim_response.json
+          echo ""
+          echo "------------------------"
           cat claim_response.json | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             if (!data.ok || !data.found) { console.error('claim failed or nothing to claim:', JSON.stringify(data)); process.exit(1); }
